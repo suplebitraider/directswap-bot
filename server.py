@@ -1,34 +1,53 @@
 # server.py
 import os, json, logging
-from flask import Flask, request, abort
+from flask import Flask, request
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
+# ---------- logging ----------
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("directswap")
 
-# ====== ENV ======
+# ---------- ENV ----------
 BOT_TOKEN             = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_BOT_TOKEN       = os.getenv("ADMIN_BOT_TOKEN", "").strip()
 ADMIN_ID              = int(os.getenv("ADMIN_ID", "0") or 0)
 ADMIN_TARGET_CHAT_ID  = int(os.getenv("ADMIN_TARGET_CHAT_ID", "0") or 0)
 WEBAPP_URL            = os.getenv("WEBAPP_URL", "").strip()
-WEBHOOK_BASE          = os.getenv("WEBHOOK_BASE", "").strip()         # https://<service>.onrender.com
+WEBHOOK_BASE          = os.getenv("WEBHOOK_BASE", "").strip()          # https://<service>.onrender.com
 WEBHOOK_SECRET        = os.getenv("WEBHOOK_SECRET", "ds12345").strip() # ds12345
 HOST                  = os.getenv("HOST", "0.0.0.0")
 PORT                  = int(os.getenv("PORT", "10000"))
 
 if not BOT_TOKEN or not ADMIN_BOT_TOKEN or not WEBHOOK_BASE:
     log.error("Missing required ENV (BOT_TOKEN / ADMIN_BOT_TOKEN / WEBHOOK_BASE)")
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+
+bot       = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 admin_bot = telebot.TeleBot(ADMIN_BOT_TOKEN, parse_mode="HTML")
 
-# ====== Flask ======
+# ---------- Flask ----------
 app = Flask(__name__)
 
 @app.get("/")
 def root_ok():
     return "DirectSwap backend OK", 200
+
+@app.get("/healthz")
+def healthz():
+    return "ok", 200
+
+@app.get("/init")
+def init():
+    """Ручная установка вебхука (удобно дернуть из браузера после деплоя)."""
+    try:
+        url = f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
+        bot.remove_webhook()
+        bot.set_webhook(url=url, allowed_updates=["message"])  # 'message' покрывает web_app_data
+        log.info("Webhook (manual) set to %s", url)
+        return f"Webhook set to {url}", 200
+    except Exception as e:
+        log.exception("init/set_webhook failed: %r", e)
+        return f"error: {e}", 500
 
 @app.post(f"/webhook/{WEBHOOK_SECRET}")
 def webhook():
@@ -42,9 +61,9 @@ def webhook():
         log.exception("process_new_updates failed: %r", e)
     return "", 200
 
-# ====== helpers ======
+# ---------- helpers ----------
 def admin_send(text, **kw):
-    """Отправка в админ-чат."""
+    """Отправка в админ-чат/бот."""
     try:
         admin_bot.send_message(ADMIN_TARGET_CHAT_ID or ADMIN_ID, text, **kw)
         log.info("admin_bot: delivered to %s", ADMIN_TARGET_CHAT_ID or ADMIN_ID)
@@ -58,11 +77,11 @@ def make_open_webapp_kb():
 
 def fmt_money(v):
     try:
-      return f"{float(v):,.2f}".replace(",", " ")
+        return f"{float(v):,.2f}".replace(",", " ")
     except Exception:
-      return str(v)
+        return str(v)
 
-# ====== commands ======
+# ---------- commands ----------
 @bot.message_handler(commands=["start"])
 def cmd_start(m):
     bot.send_message(
@@ -90,10 +109,10 @@ def cmd_testadmin(m):
         admin_send("🧪 TEST: Проверка доставки в админ-чат/бота")
         bot.send_message(m.chat.id, "Ок, тест отправлен в админ-бот.")
     except Exception as e:
-        bot.send_message(m.chat.id, f"⚠️ Admin bot failed. Mirror copy:\n\n🧪 TEST: Проверка доставки в админ-чат/бота")
+        bot.send_message(m.chat.id, "⚠️ Admin bot failed. Mirror copy:\n\n🧪 TEST: Проверка доставки в админ-чат/бота")
         log.exception("testadmin failed: %r", e)
 
-# ====== заявки из WebApp ======
+# ---------- заявки из WebApp ----------
 @bot.message_handler(content_types=["web_app_data"])
 def handle_web_app_data(message: telebot.types.Message):
     """Главный обработчик заявок из мини-приложения (Telegram.WebApp.sendData)."""
@@ -143,7 +162,7 @@ def handle_web_app_data(message: telebot.types.Message):
         except Exception:
             pass
 
-# ====== любой текст — даём кнопку открыть WebApp ======
+# ---------- fallback ----------
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def any_text(m):
     try:
@@ -158,17 +177,26 @@ def any_text(m):
     except Exception as e:
         log.exception("any_text send failed: %r", e)
 
-# ====== webhook setup ======
-def set_webhook():
+# ---------- автоподнятие вебхука при старте ----------
+@app.before_first_request
+def _ensure_webhook():
     try:
         url = f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
         bot.remove_webhook()
-        bot.set_webhook(url=url, allowed_updates=["message","web_app_data"])
-        log.info("Webhook set to %s", url)
+        bot.set_webhook(url=url, allowed_updates=["message"])
+        log.info("Webhook (auto) set to %s", url)
     except Exception as e:
-        log.exception("set_webhook failed: %r", e)
+        log.exception("before_first_request set_webhook failed: %r", e)
 
+# ---------- локальный запуск (не нужен на Render при gunicorn) ----------
 if __name__ == "__main__":
-    set_webhook()
-    app.run(host=HOST, port=PORT)
+    # На локальном запуске тоже ставим вебхук
+    try:
+        url = f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
+        bot.remove_webhook()
+        bot.set_webhook(url=url, allowed_updates=["message"])
+        log.info("Webhook (main) set to %s", url)
+    except Exception as e:
+        log.exception("main set_webhook failed: %r", e)
 
+    app.run(host=HOST, port=PORT)
