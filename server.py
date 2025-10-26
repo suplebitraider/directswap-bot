@@ -88,52 +88,75 @@ def webhook():
     body = request.get_data().decode("utf-8", errors="ignore")
     log.info("WEBHOOK HIT ct=%s body[0:200]=%s", ct, body[:200])
 
-    if "application/json" in ct:
-        try:
-            payload = json.loads(body)                          # dict
-            update = telebot.types.Update.de_json(payload)      # Update
-
-            # Логи, чтобы видеть, что именно пришло
-            if getattr(update, "message", None):
-                msg = update.message
-                log.info("UPDATE MESSAGE: chat_id=%s text=%r", msg.chat.id, (msg.text or ""))
-
-                # 1) Стандартный путь
-                try:
-                    bot.process_new_updates([update])
-                except Exception as e:
-                    log.error("process_new_updates failed: %r", e)
-
-                # 2) Форсируем обработку как «нового сообщения»
-                try:
-                    bot.process_new_messages([msg])
-                except Exception as e:
-                    log.error("process_new_messages failed: %r", e)
-
-                # 3) На время диагностики — прямой ответ на /debug
-                try:
-                    if (msg.text or "").strip() == "/debug":
-                        info = (f"<b>DEBUG</b>\n"
-                                f"admin_bot: {'ON' if admin_bot else 'OFF'}\n"
-                                f"ADMIN_TARGET_CHAT_ID: {ADMIN_TARGET_CHAT_ID}\n"
-                                f"ADMIN_ID: {ADMIN_ID}\n"
-                                f"WEBAPP_URL: {WEBAPP_URL}\n"
-                                f"WEBHOOK_BASE: {WEBHOOK_BASE}\n")
-                        bot.send_message(msg.chat.id, info)
-                        log.info("DEBUG fallback replied to chat_id=%s", msg.chat.id)
-                except Exception as e:
-                    log.error("DEBUG fallback failed: %r", e)
-
-            elif getattr(update, "callback_query", None):
-                log.info("UPDATE CALLBACK: data=%r", update.callback_query.data)
-
-        except Exception as e:
-            log.error("webhook processing failed: %r", e)
-
-        return "", 200
-    else:
+    if "application/json" not in ct:
         log.warning("WEBHOOK REJECTED wrong content-type: %s", ct)
         abort(403)
+
+    try:
+        payload = json.loads(body)                          # dict
+        update = telebot.types.Update.de_json(payload)      # Update
+
+        if getattr(update, "message", None):
+            msg = update.message
+            text = (msg.text or "").strip()
+            log.info("UPDATE MESSAGE: chat_id=%s text=%r", msg.chat.id, text)
+
+            # 0) Стандартный путь (пусть работает, если может)
+            try:
+                bot.process_new_updates([update])
+            except Exception as e:
+                log.error("process_new_updates failed: %r", e)
+            try:
+                bot.process_new_messages([msg])
+            except Exception as e:
+                log.error("process_new_messages failed: %r", e)
+
+            # 1) Форс-обработка нужных команд (без декораторов)
+            if text == "/start":
+                try:
+                    kb = InlineKeyboardMarkup()
+                    kb.add(InlineKeyboardButton("Открыть DirectSwap 💱",
+                                                web_app=WebAppInfo(url=WEBAPP_URL)))
+                    bot.send_message(msg.chat.id,
+                                     "Добро пожаловать в DirectSwap!\n\nКоманды: /debug /testadmin",
+                                     reply_markup=kb)
+                    log.info("FORCE /start replied to chat_id=%s", msg.chat.id)
+                except Exception as e:
+                    log.error("FORCE /start failed: %r", e)
+
+            elif text == "/debug":
+                try:
+                    info = (f"<b>DEBUG</b>\n"
+                            f"admin_bot: {'ON' if admin_bot else 'OFF'}\n"
+                            f"ADMIN_TARGET_CHAT_ID: {ADMIN_TARGET_CHAT_ID}\n"
+                            f"ADMIN_ID: {ADMIN_ID}\n"
+                            f"WEBAPP_URL: {WEBAPP_URL}\n"
+                            f"WEBHOOK_BASE: {WEBHOOK_BASE}\n")
+                    bot.send_message(msg.chat.id, info)
+                    log.info("FORCE /debug replied to chat_id=%s", msg.chat.id)
+                except Exception as e:
+                    log.error("FORCE /debug failed: %r", e)
+
+            elif text == "/testadmin":
+                try:
+                    kb = InlineKeyboardMarkup()
+                    kb.add(InlineKeyboardButton("💬 Открыть чат (тест)",
+                                                url=f"tg://user?id={msg.from_user.id}"))
+                    sent = admin_send("🧪 TEST: Проверка доставки в админ-чат/бота", reply_markup=kb)
+                    bot.send_message(msg.chat.id,
+                                     "✅ testadmin: отправлено" if sent
+                                     else "❌ testadmin: не удалось (проверьте ADMIN_TARGET_CHAT_ID/права)")
+                    log.info("FORCE /testadmin result sent=%s", sent)
+                except Exception as e:
+                    log.error("FORCE /testadmin failed: %r", e)
+
+        elif getattr(update, "callback_query", None):
+            log.info("UPDATE CALLBACK: data=%r", update.callback_query.data)
+
+    except Exception as e:
+        log.error("webhook processing failed: %r", e)
+
+    return "", 200
 
 @bot.message_handler(func=lambda m: True)
 @bot.message_handler(commands=["start"])
