@@ -90,22 +90,46 @@ def webhook():
 
     if "application/json" in ct:
         try:
-            # 1) Разбираем JSON в dict
-            payload = json.loads(body)
-            # 2) Конструируем Update из dict (важно для pyTelegramBotAPI)
-            update = telebot.types.Update.de_json(payload)
-            # 3) Немного дополнительного лога
+            payload = json.loads(body)                          # dict
+            update = telebot.types.Update.de_json(payload)      # Update
+
+            # Логи, чтобы видеть, что именно пришло
             if getattr(update, "message", None):
-                log.info("UPDATE MESSAGE: chat_id=%s text=%r",
-                         update.message.chat.id,
-                         (update.message.text or ""))
+                msg = update.message
+                log.info("UPDATE MESSAGE: chat_id=%s text=%r", msg.chat.id, (msg.text or ""))
+
+                # 1) Стандартный путь
+                try:
+                    bot.process_new_updates([update])
+                except Exception as e:
+                    log.error("process_new_updates failed: %r", e)
+
+                # 2) Форсируем обработку как «нового сообщения»
+                try:
+                    bot.process_new_messages([msg])
+                except Exception as e:
+                    log.error("process_new_messages failed: %r", e)
+
+                # 3) На время диагностики — прямой ответ на /debug
+                try:
+                    if (msg.text or "").strip() == "/debug":
+                        info = (f"<b>DEBUG</b>\n"
+                                f"admin_bot: {'ON' if admin_bot else 'OFF'}\n"
+                                f"ADMIN_TARGET_CHAT_ID: {ADMIN_TARGET_CHAT_ID}\n"
+                                f"ADMIN_ID: {ADMIN_ID}\n"
+                                f"WEBAPP_URL: {WEBAPP_URL}\n"
+                                f"WEBHOOK_BASE: {WEBHOOK_BASE}\n")
+                        bot.send_message(msg.chat.id, info)
+                        log.info("DEBUG fallback replied to chat_id=%s", msg.chat.id)
+                except Exception as e:
+                    log.error("DEBUG fallback failed: %r", e)
+
             elif getattr(update, "callback_query", None):
-                log.info("UPDATE CALLBACK: data=%r",
-                         update.callback_query.data)
-            # 4) Передаём в телебот
-            bot.process_new_updates([update])
+                log.info("UPDATE CALLBACK: data=%r", update.callback_query.data)
+
         except Exception as e:
-            log.error("process_new_updates failed: %r", e)
+            log.error("webhook processing failed: %r", e)
+
         return "", 200
     else:
         log.warning("WEBHOOK REJECTED wrong content-type: %s", ct)
