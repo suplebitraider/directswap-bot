@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: directswap-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn server:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: WEBHOOK_BASE
+        sync: false
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: ADMIN_TARGET_CHAT_ID
+        sync: false
+      - key: WEBAPP_URL
+        sync: false
