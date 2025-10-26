@@ -99,31 +99,82 @@ def webhook():
         if getattr(update, "message", None):
             msg = update.message
             text = (msg.text or "").strip()
+            # ------- 1) если это web_app_data — обрабатываем напрямую -------
+            try:
+                wad = getattr(msg, "web_app_data", None)
+                if wad and getattr(wad, "data", None):
+                    try:
+                        data = json.loads(wad.data)
+                    except Exception:
+                        data = {"type": "unknown", "raw": wad.data}
+                    log.info("web_app_data RAW: %s", data)
+
+                    # формируем кнопки для перехода к пользователю
+                    user = msg.from_user
+                    deep_profile = f"tg://user?id={user.id}"
+                    user_tag = f"@{user.username}" if user.username else f"id:{user.id}"
+                    handle = data.get("username")
+
+                    kb = InlineKeyboardMarkup()
+                    kb.add(InlineKeyboardButton("💬 Открыть чат с клиентом", url=deep_profile))
+                    if handle and handle.startswith('@'):
+                        kb.add(InlineKeyboardButton("👤 Профиль (из WebApp)", url=f"https://t.me/{handle[1:]}"))
+                    elif user.username:
+                        kb.add(InlineKeyboardButton("👤 Профиль", url=f"https://t.me/{user.username}"))
+
+                    dtype = data.get("type")
+                    if dtype == "exchange_request":
+                        calc = data.get("calc", {}) or {}
+                        text_admin = ("🆕 <b>Заявка DirectSwap</b>\n"
+                                      f"От: {user_tag}\n"
+                                      f"Handle (из WebApp): {handle}\n"
+                                      f"User ID: <code>{user.id}</code>\n"
+                                      f"Имя: {user.first_name or ''} {user.last_name or ''}\n"
+                                      f"Сеть: {data.get('network')}\n"
+                                      f"Сумма: {data.get('amount')}\n"
+                                      f"Курс USD→RUB: {data.get('usd_rub')}\n"
+                                      f"Итог: <b>{calc.get('result_rub')} ₽</b>\n"
+                                      f"Комиссия сервиса: {calc.get('commission_rub')} ₽\n"
+                                      f"Номер карты: <code>{data.get('card_number')}</code>\n")
+                        admin_send(text_admin, reply_markup=kb)
+                        try:
+                            bot.send_message(msg.chat.id, "✅ Заявка на обмен принята. Мы свяжемся с вами в ближайшее время.")
+                        except Exception as e:
+                            log.error("user ack exchange failed: %r", e)
+
+                    elif dtype == "support_request":
+                        text_admin = ("🆘 <b>Обращение в поддержку</b>\n"
+                                      f"От: {user_tag}\n"
+                                      f"Handle (из WebApp): {handle}\n"
+                                      f"Тема: {data.get('topic')}\n"
+                                      f"Контакт: {data.get('contact')}\n"
+                                      f"Сообщение: {data.get('message')}")
+                        admin_send(text_admin, reply_markup=kb)
+                        try:
+                            bot.send_message(msg.chat.id, "✅ Сообщение в поддержку доставлено.")
+                        except Exception as e:
+                            log.error("user ack support failed: %r", e)
+
+                    return "", 200
+            except Exception as e:
+                log.error("direct web_app_data handling failed: %r", e)
+            # ------- 2) Иначе это обычное сообщение/команда -------
             log.info("UPDATE MESSAGE: chat_id=%s text=%r", msg.chat.id, text)
+            # стандартные пути
+            try: bot.process_new_updates([update])
+            except Exception as e: log.error("process_new_updates failed: %r", e)
+            try: bot.process_new_messages([msg])
+            except Exception as e: log.error("process_new_messages failed: %r", e)
 
-            # 0) Стандартный путь (пусть работает, если может)
-            try:
-                bot.process_new_updates([update])
-            except Exception as e:
-                log.error("process_new_updates failed: %r", e)
-            try:
-                bot.process_new_messages([msg])
-            except Exception as e:
-                log.error("process_new_messages failed: %r", e)
-
-            # 1) Форс-обработка нужных команд (без декораторов)
+            # форс реакции на ключевые команды
             if text == "/start":
                 try:
                     kb = InlineKeyboardMarkup()
-                    kb.add(InlineKeyboardButton("Открыть DirectSwap 💱",
-                                                web_app=WebAppInfo(url=WEBAPP_URL)))
-                    bot.send_message(msg.chat.id,
-                                     "Добро пожаловать в DirectSwap!\n\nКоманды: /debug /testadmin",
-                                     reply_markup=kb)
+                    kb.add(InlineKeyboardButton("Открыть DirectSwap 💱", web_app=WebAppInfo(url=WEBAPP_URL)))
+                    bot.send_message(msg.chat.id, "Добро пожаловать в DirectSwap!\n\nКоманды: /debug /testadmin", reply_markup=kb)
                     log.info("FORCE /start replied to chat_id=%s", msg.chat.id)
                 except Exception as e:
                     log.error("FORCE /start failed: %r", e)
-
             elif text == "/debug":
                 try:
                     info = (f"<b>DEBUG</b>\n"
@@ -136,16 +187,12 @@ def webhook():
                     log.info("FORCE /debug replied to chat_id=%s", msg.chat.id)
                 except Exception as e:
                     log.error("FORCE /debug failed: %r", e)
-
             elif text == "/testadmin":
                 try:
                     kb = InlineKeyboardMarkup()
-                    kb.add(InlineKeyboardButton("💬 Открыть чат (тест)",
-                                                url=f"tg://user?id={msg.from_user.id}"))
+                    kb.add(InlineKeyboardButton("💬 Открыть чат (тест)", url=f"tg://user?id={msg.from_user.id}"))
                     sent = admin_send("🧪 TEST: Проверка доставки в админ-чат/бота", reply_markup=kb)
-                    bot.send_message(msg.chat.id,
-                                     "✅ testadmin: отправлено" if sent
-                                     else "❌ testadmin: не удалось (проверьте ADMIN_TARGET_CHAT_ID/права)")
+                    bot.send_message(msg.chat.id, "✅ testadmin: отправлено" if sent else "❌ testadmin: не удалось (проверьте ADMIN_TARGET_CHAT_ID/права)")
                     log.info("FORCE /testadmin result sent=%s", sent)
                 except Exception as e:
                     log.error("FORCE /testadmin failed: %r", e)
@@ -157,6 +204,7 @@ def webhook():
         log.error("webhook processing failed: %r", e)
 
     return "", 200
+
 
 @bot.message_handler(func=lambda m: True)
 @bot.message_handler(commands=["start"])
