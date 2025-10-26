@@ -84,12 +84,25 @@ def ping():
 
 @app.route(f"/webhook/{WEBHOOK_SECRET}", methods=["POST"])
 def webhook():
-    ct = request.headers.get("content-type","")
+    ct = request.headers.get("content-type", "").lower()
     body = request.get_data().decode("utf-8", errors="ignore")
     log.info("WEBHOOK HIT ct=%s body[0:200]=%s", ct, body[:200])
-    if ct.startswith("application/json"):
-        update = telebot.types.Update.de_json(body)
+
+    if "application/json" in ct:
         try:
+            # 1) Разбираем JSON в dict
+            payload = json.loads(body)
+            # 2) Конструируем Update из dict (важно для pyTelegramBotAPI)
+            update = telebot.types.Update.de_json(payload)
+            # 3) Немного дополнительного лога
+            if getattr(update, "message", None):
+                log.info("UPDATE MESSAGE: chat_id=%s text=%r",
+                         update.message.chat.id,
+                         (update.message.text or ""))
+            elif getattr(update, "callback_query", None):
+                log.info("UPDATE CALLBACK: data=%r",
+                         update.callback_query.data)
+            # 4) Передаём в телебот
             bot.process_new_updates([update])
         except Exception as e:
             log.error("process_new_updates failed: %r", e)
@@ -98,6 +111,7 @@ def webhook():
         log.warning("WEBHOOK REJECTED wrong content-type: %s", ct)
         abort(403)
 
+@bot.message_handler(func=lambda m: True)
 @bot.message_handler(commands=["start"])
 def start(message):
     kb = InlineKeyboardMarkup()
