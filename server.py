@@ -207,6 +207,75 @@ def webhook():
 
 
 @bot.message_handler(func=lambda m: True)
+
+# ============= ВАЖНО: отдельный хэндлер для web_app_data =============
+@bot.message_handler(content_types=['web_app_data'])
+def handle_web_app_data(message: telebot.types.Message):
+    try:
+        raw = message.web_app_data.data  # это та строка, которую мы отправляем из app.js через TG.sendData(...)
+        log.info("web_app_data RAW: %s", raw)
+
+        # на всякий случай парсим JSON (если пришело не-JSON, не упадём)
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = {"raw": raw}
+
+        # составим текст заявки для админа
+        def fmt_money(v):
+            try:
+                return f"{float(v):,.2f}".replace(",", " ")
+            except Exception:
+                return str(v)
+
+        typ = data.get("type", "exchange_request")
+        net = data.get("network", "-")
+        amt = data.get("amount", "-")
+        rate = data.get("usd_rub", "-")
+
+        calc = data.get("calc", {}) or {}
+        res_rub = fmt_money(calc.get("result_rub", "-"))
+        fee_rub = fmt_money(calc.get("commission_rub", "-"))
+
+        card = data.get("card_number", "—")
+        username = data.get("username") or ""
+        if username and not username.startswith("@"):
+            username = "@" + str(username)
+
+        client_link = username if username else f"id:{message.from_user.id}"
+        title = "🟢 Новая заявка" if typ == "exchange_request" else "🟦 Обращение в поддержку"
+
+        text = (
+            f"{title}\n"
+            f"— Клиент: {client_link}\n"
+            f"— Сеть: {net}\n"
+            f"— Сумма: {amt} USDT\n"
+            f"— Курс: {rate} ₽\n"
+            f"— Итог (к выплате): {res_rub} ₽\n"
+            f"— Комиссия сервиса: {fee_rub} ₽\n"
+            f"— Карта: <code>{card}</code>\n"
+        )
+
+        # отправляем в админ-чат/бот
+        admin_bot.send_message(int(ADMIN_TARGET_CHAT_ID), text)
+
+        # можно кратко ответить клиенту (не обязательно)
+        bot.send_message(
+            message.chat.id,
+            "✅ Заявка отправлена. Мы скоро свяжемся с вами."
+        )
+
+    except Exception as e:
+        log.exception("handle_web_app_data failed: %r", e)
+        try:
+            admin_bot.send_message(
+                int(ADMIN_TARGET_CHAT_ID),
+                f"⚠️ Ошибка при приёме web_app_data: <code>{e}</code>"
+            )
+        except Exception:
+            pass
+# =====================================================================
+
 @bot.message_handler(commands=["start"])
 def start(message):
     kb = InlineKeyboardMarkup()
