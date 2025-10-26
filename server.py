@@ -201,6 +201,29 @@ def set_webhook():
         log.info("Webhook set to %s", url)
     except Exception as e:
         log.error("set_webhook failed: %r", e)
+@bot.message_handler(func=lambda m: True)
+def any_text(message):
+    # логируем всё, что пришло
+    try:
+        txt = (message.text or "").strip()
+    except Exception:
+        txt = ""
+    log.info("ANY MSG: chat_id=%s type=%s text=%r",
+             message.chat.id, getattr(message.chat, "type", "?"), txt)
+
+    # даём кнопку на веб-апп и подсказки по командам
+    try:
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("Открыть DirectSwap 💱",
+                                    web_app=WebAppInfo(url=WEBAPP_URL)))
+        bot.send_message(
+            message.chat.id,
+            "Я на связи.\nНажмите /start чтобы открыть мини-приложение DirectSwap, "
+            "или /debug /testadmin для проверки.",
+            reply_markup=kb
+        )
+    except Exception as e:
+        log.error("any_text send failed: %r", e)
 
 if __name__ == "__main__":
     set_webhook()
