@@ -1,4 +1,4 @@
-# server.py
+# server.py — Flask 3.x compatible
 import os, json, logging
 from flask import Flask, request
 import telebot
@@ -38,11 +38,12 @@ def healthz():
 
 @app.get("/init")
 def init():
-    """Ручная установка вебхука (удобно дернуть из браузера после деплоя)."""
+    """Ручная установка вебхука (можно дернуть из браузера после деплоя)."""
     try:
         url = f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
         bot.remove_webhook()
-        bot.set_webhook(url=url, allowed_updates=["message"])  # 'message' покрывает web_app_data
+        # для web_app_data достаточно "message"
+        bot.set_webhook(url=url, allowed_updates=["message"])
         log.info("Webhook (manual) set to %s", url)
         return f"Webhook set to {url}", 200
     except Exception as e:
@@ -124,18 +125,15 @@ def handle_web_app_data(message: telebot.types.Message):
         except Exception:
             data = {"raw": raw}
 
-        def val(key, default="-"):
-            return data.get(key, default)
-
-        typ   = val("type", "exchange_request")
-        net   = val("network", "-")
-        amt   = val("amount", "-")
-        rate  = val("usd_rub", "-")
+        typ   = data.get("type", "exchange_request")
+        net   = data.get("network", "-")
+        amt   = data.get("amount", "-")
+        rate  = data.get("usd_rub", "-")
         calc  = data.get("calc", {}) or {}
         res_rub = fmt_money(calc.get("result_rub", "-"))
         fee_rub = fmt_money(calc.get("commission_rub", "-"))
-        card  = val("card_number", "—")
-        uname = val("username", "") or ""
+        card  = data.get("card_number", "—")
+        uname = data.get("username", "") or ""
         if uname and not uname.startswith("@"):
             uname = "@" + uname
 
@@ -162,35 +160,23 @@ def handle_web_app_data(message: telebot.types.Message):
         except Exception:
             pass
 
-# ---------- fallback ----------
-@bot.message_handler(func=lambda m: True, content_types=['text'])
-def any_text(m):
-    try:
-        txt = (m.text or "").strip().lower()
-        log.info("ANY MSG: chat_id=%s text=%s", m.chat.id, txt)
-        bot.send_message(
-            m.chat.id,
-            "Я на связи. Нажмите /start чтобы открыть мини-приложение DirectSwap, "
-            "или /debug /testadmin для проверки.",
-            reply_markup=make_open_webapp_kb()
-        )
-    except Exception as e:
-        log.exception("any_text send failed: %r", e)
-
-# ---------- автоподнятие вебхука при старте ----------
-@app.before_first_request
-def _ensure_webhook():
+# ---------- webhook setup on import (Flask 3.x safe) ----------
+def _ensure_webhook_on_import():
+    """Вызывается при импорте модуля (когда gunicorn загрузил server:app)."""
     try:
         url = f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
         bot.remove_webhook()
         bot.set_webhook(url=url, allowed_updates=["message"])
-        log.info("Webhook (auto) set to %s", url)
+        log.info("Webhook (import) set to %s", url)
     except Exception as e:
-        log.exception("before_first_request set_webhook failed: %r", e)
+        log.exception("import set_webhook failed: %r", e)
 
-# ---------- локальный запуск (не нужен на Render при gunicorn) ----------
+# выставляем вебхук при загрузке модуля
+_ensure_webhook_on_import()
+
+# ---------- локальный запуск (для dev, не нужен на Render) ----------
 if __name__ == "__main__":
-    # На локальном запуске тоже ставим вебхук
+    # Дополнительно ставим вебхук при локальном запуске
     try:
         url = f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
         bot.remove_webhook()
