@@ -337,3 +337,14 @@ def any_text(message):
 if __name__ == "__main__":
     set_webhook()
     app.run(host=HOST, port=PORT)
+
+@bot.message_handler(commands=["fakeorder"])
+def fakeorder(message):
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("💬 Открыть чат с клиентом", url=f"tg://user?id={message.from_user.id}"))
+    text_admin = ("🆕 <b>Заявка DirectSwap</b>\n"
+                  f"От: @{message.from_user.username}\n"
+                  "Сеть: TRC-20\nСумма: 100\nКурс USD→RUB: 80\n"
+                  "Итог: <b>7760 ₽</b>\nКомиссия сервиса: 240 ₽\nНомер карты: <code>4111 1111 1111 1111</code>")
+    admin_send(text_admin, reply_markup=kb)
+    bot.send_message(message.chat.id, "✅ Тестовая заявка отправлена в админ-чат.")
