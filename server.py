@@ -1,6 +1,7 @@
 # server.py — Flask 3.x compatible (webhook + commands + web_app_data)
 import os, json, logging, time
 from flask import Flask, request, jsonify
+from flask_cors import CORS, cross_origin
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
@@ -9,24 +10,29 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("directswap")
 
 # ---------- ENV ----------
-BOT_TOKEN             = os.getenv("BOT_TOKEN", "").strip()
-ADMIN_BOT_TOKEN       = os.getenv("ADMIN_BOT_TOKEN", "").strip()
-ADMIN_ID              = int(os.getenv("ADMIN_ID", "0") or 0)
-ADMIN_TARGET_CHAT_ID  = int(os.getenv("ADMIN_TARGET_CHAT_ID", "0") or 0)
-WEBAPP_URL            = os.getenv("WEBAPP_URL", "").strip()
-WEBHOOK_BASE          = os.getenv("WEBHOOK_BASE", "").strip()          # https://<service>.onrender.com
-WEBHOOK_SECRET        = os.getenv("WEBHOOK_SECRET", "ds12345").strip() # ds12345
-HOST                  = os.getenv("HOST", "0.0.0.0")
-PORT                  = int(os.getenv("PORT", "10000"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+ADMIN_BOT_TOKEN = os.getenv("ADMIN_BOT_TOKEN", "").strip()
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or 0)
+ADMIN_TARGET_CHAT_ID = int(os.getenv("ADMIN_TARGET_CHAT_ID", "0") or 0)
+WEBAPP_URL = os.getenv("WEBAPP_URL", "").strip()
+WEBHOOK_BASE = os.getenv("WEBHOOK_BASE", "").strip()
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "ds12345").strip()
+HOST = os.getenv("HOST", "0.0.0.0")
+PORT = int(os.getenv("PORT", "10000"))
 
 if not BOT_TOKEN or not ADMIN_BOT_TOKEN or not WEBHOOK_BASE:
     log.error("Missing required ENV (BOT_TOKEN / ADMIN_BOT_TOKEN / WEBHOOK_BASE)")
 
-bot       = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 admin_bot = telebot.TeleBot(ADMIN_BOT_TOKEN, parse_mode="HTML")
 
 # ---------- Flask ----------
 app = Flask(__name__)
+CORS(app, origins=[
+    "https://sunibaktsalder.github.io",
+    "https://telegram.org", 
+    "https://web.telegram.org"
+])
 
 @app.get("/")
 def root_ok():
@@ -51,7 +57,7 @@ def botinfo():
 
 @app.get("/init")
 def init():
-    """Ручная установка вебхука (дерни из браузера после деплоя)."""
+    """Ручная установка вебхука."""
     try:
         url = f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
         bot.remove_webhook()
@@ -65,14 +71,16 @@ def init():
 
 # ---------- Резервный эндпоинт для заявок ----------
 @app.post("/collect")
+@cross_origin()
 def collect():
     """Резерв: приём заявки обычным HTTP из браузера."""
     try:
         p = request.get_json(force=True) or {}
-    except Exception:
+        log.info("COLLECT received: %s", p)
+    except Exception as e:
+        log.error("COLLECT error: %r", e)
         p = {}
 
-    # приводим к тем же полям, что приходят через sendData:
     if not isinstance(p, dict):
         p = {"raw": str(p)}
     calc = p.get("calc") or {}
@@ -80,7 +88,7 @@ def collect():
     lines = [
         "💠 *Новая заявка* (HTTP резерв)",
         f"Сеть: *{p.get('network','?')}*",
-        f"Сумма: *{p.get('amount','?')} USDT*",
+        f"Сумма: *{p.get('amount','?')} USDT*", 
         f"Курс: *{p.get('usd_rub','?')} ₽*",
         f"Итог (RUB): *{calc.get('result_rub','?')}*",
         f"Комиссия сервиса: *{calc.get('commission_rub','?')}*",
@@ -92,10 +100,10 @@ def collect():
     try:
         admin_bot.send_message(ADMIN_TARGET_CHAT_ID, admin_text, parse_mode="Markdown")
         log.info("ADMIN DELIVERED (HTTP reserve)")
+        return {"ok": True, "message": "Заявка отправлена"}
     except Exception as e:
         log.error("ADMIN reserve send failed: %r", e)
-
-    return {"ok": True}
+        return {"ok": False, "error": str(e)}, 500
 
 # --- WEBHOOK ---
 @app.post(f"/webhook/{WEBHOOK_SECRET}")
@@ -120,32 +128,26 @@ def webhook():
         except Exception:
             payload = {"raw": raw}
 
-        # формируем понятное админ-сообщение
         p = payload if isinstance(payload, dict) else {"raw": str(payload)}
+        calc = p.get("calc") or {}
         lines = [
             "💠 *Новая заявка*",
             f"Сеть: *{p.get('network','?')}*",
             f"Сумма: *{p.get('amount','?')} USDT*",
             f"Курс: *{p.get('usd_rub','?')} ₽*",
-        ]
-        calc = p.get("calc") or {}
-        lines += [
-            f"Итог (RUB): *{calc.get('result_rub','?')}*",
+            f"Итог (RUB): *{calc.get('result_rub','?')}*", 
             f"Комиссия сервиса: *{calc.get('commission_rub','?')}*",
-        ]
-        lines += [
             f"Карта: *{p.get('card_number','?')}*",
             f"Telegram: *{p.get('username','—')}*"
         ]
         admin_text = "\n".join(lines)
 
-        # отправка в админ-бота с ретраями
         try:
             for i in range(3):
                 try:
                     admin_bot.send_message(
                         ADMIN_TARGET_CHAT_ID,
-                        admin_text,
+                        admin_text, 
                         parse_mode="Markdown"
                     )
                     log.info("ADMIN DELIVERED")
@@ -158,7 +160,7 @@ def webhook():
 
         return jsonify(ok=True)
 
-    # 2) Обычные команды (/start, /debug, /testadmin)
+    # 2) Обычные команды
     if text in ("/start", "/init"):
         bot.send_message(chat_id, "Готово. Нажмите *Начать обмен* в меню.", parse_mode="Markdown")
         return jsonify(ok=True)
@@ -173,20 +175,17 @@ def webhook():
             f"WEBHOOK_BASE: {WEBHOOK_BASE}\n"
         )
         bot.send_message(chat_id, dbg)
-        # тест в админ-чат
         try:
             admin_bot.send_message(ADMIN_TARGET_CHAT_ID, "🧪 TEST: Проверка доставки в админ-чат/бота")
         except Exception as e:
             log.error("Admin test send failed: %r", e)
         return jsonify(ok=True)
 
-    # прочее — просто лог
     log.info("MSG: chat_id=%s text=%r", chat_id, text)
     return jsonify(ok=True)
 
 # ---------- helpers ----------
 def admin_send(text, **kw):
-    """Отправка в админ-чат/бот."""
     try:
         admin_bot.send_message(ADMIN_TARGET_CHAT_ID or ADMIN_ID, text, **kw)
         log.info("admin_bot: delivered to %s", ADMIN_TARGET_CHAT_ID or ADMIN_ID)
@@ -198,92 +197,8 @@ def make_open_webapp_kb():
     kb.add(InlineKeyboardButton("Открыть DirectSwap 💱", web_app=WebAppInfo(url=WEBAPP_URL)))
     return kb
 
-def fmt_money(v):
-    try:
-        return f"{float(v):,.2f}".replace(",", " ")
-    except Exception:
-        return str(v)
-
-# ---------- commands ----------
-@bot.message_handler(commands=["start"])
-def cmd_start(m):
-    bot.send_message(
-        m.chat.id,
-        "Добро пожаловать в DirectSwap!\nНажмите кнопку ниже, чтобы открыть мини-приложение.",
-        reply_markup=make_open_webapp_kb()
-    )
-
-@bot.message_handler(commands=["debug"])
-def cmd_debug(m):
-    text = (
-        "DEBUG\n"
-        f"admin_bot: ON\n"
-        f"ADMIN_TARGET_CHAT_ID: {ADMIN_TARGET_CHAT_ID}\n"
-        f"ADMIN_ID: {ADMIN_ID}\n"
-        f"WEBAPP_URL: {WEBAPP_URL}\n"
-        f"WEBHOOK_BASE: {WEBHOOK_BASE}\n"
-        f"WEBHOOK_SECRET: {WEBHOOK_SECRET}\n"
-    )
-    bot.send_message(m.chat.id, text)
-
-@bot.message_handler(commands=["testadmin"])
-def cmd_testadmin(m):
-    try:
-        admin_send("🧪 TEST: Проверка доставки в админ-чат/бота")
-        bot.send_message(m.chat.id, "Ок, тест отправлен в админ-бот.")
-    except Exception as e:
-        bot.send_message(m.chat.id, "⚠️ Admin bot failed. Mirror copy:\n\n🧪 TEST: Проверка доставки в админ-чат/бота")
-        log.exception("testadmin failed: %r", e)
-
-# ---------- заявки из WebApp ----------
-@bot.message_handler(content_types=["web_app_data"])
-def handle_web_app_data(message: telebot.types.Message):
-    """Главный обработчик заявок из мини-приложения (Telegram.WebApp.sendData)."""
-    try:
-        raw = message.web_app_data.data
-        log.info("web_app_data RAW: %s", raw)
-        try:
-            data = json.loads(raw)
-        except Exception:
-            data = {"raw": raw}
-
-        typ   = data.get("type", "exchange_request")
-        net   = data.get("network", "-")
-        amt   = data.get("amount", "-")
-        rate  = data.get("usd_rub", "-")
-        calc  = data.get("calc", {}) or {}
-        res_rub = fmt_money(calc.get("result_rub", "-"))
-        fee_rub = fmt_money(calc.get("commission_rub", "-"))
-        card  = data.get("card_number", "—")
-        uname = data.get("username", "") or ""
-        if uname and not uname.startswith("@"):
-            uname = "@" + uname
-
-        client = uname if uname else f"id:{message.from_user.id}"
-        title = "🟢 Новая заявка" if typ == "exchange_request" else "🟦 Обращение в поддержку"
-
-        text = (
-            f"{title}\n"
-            f"— Клиент: {client}\n"
-            f"— Сеть: {net}\n"
-            f"— Сумма: {amt} USDT\n"
-            f"— Курс: {rate} ₽\n"
-            f"— Итог (к выплате): {res_rub} ₽\n"
-            f"— Комиссия сервиса: {fee_rub} ₽\n"
-            f"— Карта: <code>{card}</code>\n"
-        )
-        admin_send(text)
-        bot.send_message(message.chat.id, "✅ Заявка отправлена. Мы скоро свяжемся с вами.")
-    except Exception as e:
-        log.exception("handle_web_app_data failed: %r", e)
-        try:
-            admin_send(f"⚠️ Ошибка при приёме web_app_data: <code>{e}</code>")
-        except Exception:
-            pass
-
-# ---------- webhook setup on import (Flask 3.x safe) ----------
+# ---------- webhook setup ----------
 def _ensure_webhook_on_import():
-    """Вызывается при импорте модуля (когда gunicorn загрузил server:app)."""
     try:
         url = f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
         bot.remove_webhook()
@@ -295,15 +210,5 @@ def _ensure_webhook_on_import():
 
 _ensure_webhook_on_import()
 
-# ---------- локальный запуск (для dev; на Render не нужно) ----------
 if __name__ == "__main__":
-    try:
-        url = f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
-        bot.remove_webhook()
-        bot.set_webhook(url=url)
-        me = bot.get_me()
-        log.info("Webhook (main) set to %s for @%s", url, me.username)
-    except Exception as e:
-        log.exception("main set_webhook failed: %r", e)
-
     app.run(host=HOST, port=PORT)
