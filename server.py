@@ -208,10 +208,11 @@ def webhook():
     upd = request.get_json(silent=True) or {}
     log.info("WEBHOOK JSON[0:300]=%r", str(upd)[:300])
 
-    # Обработка callback query (нажатия на кнопки)
+    # Обработка callback query для админ-бота
     callback_query = upd.get("callback_query")
     if callback_query:
-        handle_callback_query(callback_query)
+        # Передаем callback в админ-бота для обработки
+        admin_bot.process_new_updates([telebot.types.Update.de_json(upd)])
         return jsonify(ok=True)
 
     msg = upd.get("message") or upd.get("edited_message")
@@ -374,15 +375,16 @@ def webhook():
     log.info("MSG: chat_id=%s text=%r", chat_id, text)
     return jsonify(ok=True)
 
-# ---------- Обработка callback query ----------
-def handle_callback_query(callback_query):
-    """Обработка нажатий на кнопки в админ-боте."""
+# ---------- Обработка callback query для админ-бота ----------
+@admin_bot.callback_query_handler(func=lambda call: True)
+def handle_admin_callback(call):
+    """Обработка callback в админ-боте."""
     try:
-        data = callback_query.data
-        message = callback_query.message
-        admin_bot.answer_callback_query(callback_query.id)
+        data = call.data
+        message = call.message
+        admin_bot.answer_callback_query(call.id)
         
-        log.info("Callback received: %s", data)
+        log.info("Admin callback received: %s", data)
         
         if data.startswith("rejected_"):
             request_id = data.replace("rejected_", "")
@@ -459,16 +461,16 @@ def handle_callback_query(callback_query):
         elif data.startswith("support_"):
             request_id = data.replace("support_", "")
             admin_bot.answer_callback_query(
-                callback_query.id,
+                call.id,
                 text=f"Ответьте на заявку поддержки #{request_id}",
                 show_alert=True
             )
             
     except Exception as e:
-        log.exception("handle_callback_query failed: %r", e)
+        log.exception("Admin callback failed: %r", e)
         try:
             admin_bot.answer_callback_query(
-                callback_query.id,
+                call.id,
                 text="Ошибка обработки",
                 show_alert=True
             )
