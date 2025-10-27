@@ -1,4 +1,4 @@
-# server.py — Flask 3.x compatible
+# server.py — Flask 3.x compatible (webhook + commands + web_app_data)
 import os, json, logging
 from flask import Flask, request
 import telebot
@@ -36,16 +36,29 @@ def root_ok():
 def healthz():
     return "ok", 200
 
+@app.get("/botinfo")
+def botinfo():
+    try:
+        me = bot.get_me()
+        return {
+            "ok": True,
+            "username": me.username,
+            "id": me.id,
+            "webhook": f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
+        }, 200
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 500
+
 @app.get("/init")
 def init():
-    """Ручная установка вебхука (можно дернуть из браузера после деплоя)."""
+    """Ручная установка вебхука (дерни из браузера после деплоя)."""
     try:
         url = f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
         bot.remove_webhook()
-        # для web_app_data достаточно "message"
-        bot.set_webhook(url=url, allowed_updates=["message"])
-        log.info("Webhook (manual) set to %s", url)
-        return f"Webhook set to {url}", 200
+        bot.set_webhook(url=url)  # без allowed_updates — Telegram пришлёт ВСЁ (и /start, и web_app_data)
+        me = bot.get_me()
+        log.info("Webhook (manual) set to %s for @%s", url, me.username)
+        return f"Webhook set to {url} for @{me.username}", 200
     except Exception as e:
         log.exception("init/set_webhook failed: %r", e)
         return f"error: {e}", 500
@@ -152,7 +165,6 @@ def handle_web_app_data(message: telebot.types.Message):
         )
         admin_send(text)
         bot.send_message(message.chat.id, "✅ Заявка отправлена. Мы скоро свяжемся с вами.")
-
     except Exception as e:
         log.exception("handle_web_app_data failed: %r", e)
         try:
@@ -166,22 +178,22 @@ def _ensure_webhook_on_import():
     try:
         url = f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
         bot.remove_webhook()
-        bot.set_webhook(url=url, allowed_updates=["message"])
-        log.info("Webhook (import) set to %s", url)
+        bot.set_webhook(url=url)  # без allowed_updates
+        me = bot.get_me()
+        log.info("Webhook (import) set to %s for @%s", url, me.username)
     except Exception as e:
         log.exception("import set_webhook failed: %r", e)
 
-# выставляем вебхук при загрузке модуля
 _ensure_webhook_on_import()
 
-# ---------- локальный запуск (для dev, не нужен на Render) ----------
+# ---------- локальный запуск (для dev; на Render не нужно) ----------
 if __name__ == "__main__":
-    # Дополнительно ставим вебхук при локальном запуске
     try:
         url = f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
         bot.remove_webhook()
-        bot.set_webhook(url=url, allowed_updates=["message"])
-        log.info("Webhook (main) set to %s", url)
+        bot.set_webhook(url=url)  # без allowed_updates
+        me = bot.get_me()
+        log.info("Webhook (main) set to %s for @%s", url, me.username)
     except Exception as e:
         log.exception("main set_webhook failed: %r", e)
 
