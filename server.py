@@ -65,15 +65,109 @@ def init():
 
 @app.post(f"/webhook/{WEBHOOK_SECRET}")
 def webhook():
-    ct = request.headers.get("content-type", "")
-    body = request.get_data().decode("utf-8", errors="ignore")
-    log.info("WEBHOOK HIT ct=%s body[0:200]=%s", ct, body[:200])
     try:
-        update = telebot.types.Update.de_json(body)
-        bot.process_new_updates([update])
+        # 1) Берем JSON апдейта от Telegram
+        upd = request.get_json(silent=True) or {}
+        log.info("WEBHOOK JSON[0:300]=%s", str(upd)[:300])
+
+        msg = upd.get("message") or {}
+        chat = msg.get("chat") or {}
+        chat_id = chat.get("id")
+        text = (msg.get("text") or "").strip()
+
+        # 2) web_app_data (заявка из мини-приложения)
+        if "web_app_data" in msg:
+            raw = (msg["web_app_data"] or {}).get("data", "")
+            log.info("WEBAPP RAW=%s", raw)
+
+            try:
+                data = json.loads(raw)
+            except Exception:
+                data = {"raw": raw}
+
+            # поля, как мы договорились
+            typ     = data.get("type", "exchange_request")
+            net     = data.get("network", "-")
+            amount  = str(data.get("amount", ""))
+            usd_rub = str(data.get("usd_rub", ""))
+            calc    = data.get("calc", {}) or {}
+            result_rub = str(calc.get("result_rub", ""))
+            fee_rub    = str(calc.get("commission_rub", ""))
+            card       = str(data.get("card_number", "—"))
+            uname      = data.get("username", "")
+            if uname and not uname.startswith("@"):
+                uname = "@"+uname
+
+            client = uname if uname else f"id:{msg.get('from',{}).get('id','')}"
+            title  = "🟢 Новая заявка" if typ == "exchange_request" else "🟦 Обращение в поддержку"
+
+            txt = (
+                f"{title}\n"
+                f"— Клиент: {client}\n"
+                f"— Сеть: {net}\n"
+                f"— Сумма: {amount} USDT\n"
+                f"— Курс: {usd_rub} ₽\n"
+                f"— Итог (к выплате): {result_rub} ₽\n"
+                f"— Комиссия сервиса: {fee_rub} ₽\n"
+                f"— Карта: <code>{card}</code>\n"
+            )
+
+            # отсылаем в админ-бот
+            try:
+                admin_bot.send_message(ADMIN_TARGET_CHAT_ID or ADMIN_ID, txt, parse_mode="HTML")
+                log.info("ADMIN DELIVERED to %s", ADMIN_TARGET_CHAT_ID or ADMIN_ID)
+            except Exception as e:
+                log.exception("admin send failed: %r", e)
+
+            # отвечаем клиенту
+            if chat_id:
+                try:
+                    bot.send_message(chat_id, "✅ Заявка отправлена. Мы скоро свяжемся с вами.")
+                except Exception as e:
+                    log.exception("reply to client failed: %r", e)
+
+            return "", 200
+
+        # 3) Обычные команды/текст
+        if chat_id and text:
+            log.info("MSG: chat_id=%s text=%s", chat_id, text)
+
+            if text.startswith("/start"):
+                kb = InlineKeyboardMarkup()
+                kb.add(InlineKeyboardButton("Открыть DirectSwap 💱", web_app=WebAppInfo(url=WEBAPP_URL)))
+                bot.send_message(
+                    chat_id,
+                    "Привет! 👋 Это DirectSwap. Нажми кнопку ниже, чтобы открыть мини-приложение.",
+                    reply_markup=kb
+                )
+
+            elif text.startswith("/debug"):
+                bot.send_message(
+                    chat_id,
+                    "DEBUG\n"
+                    f"ADMIN_TARGET_CHAT_ID: {ADMIN_TARGET_CHAT_ID}\n"
+                    f"ADMIN_ID: {ADMIN_ID}\n"
+                    f"WEBAPP_URL: {WEBAPP_URL}\n"
+                    f"WEBHOOK_BASE: {WEBHOOK_BASE}\n"
+                    f"WEBHOOK_SECRET: {WEBHOOK_SECRET}\n"
+                )
+
+            elif text.startswith("/testadmin"):
+                try:
+                    admin_bot.send_message(ADMIN_TARGET_CHAT_ID or ADMIN_ID, "🧪 TEST: Проверка доставки в админ-бота")
+                    bot.send_message(chat_id, "✅ Тест отправлен в админ-бот.")
+                except Exception as e:
+                    log.exception("testadmin failed: %r", e)
+                    bot.send_message(chat_id, "⚠️ Не удалось отправить тест админ-боту.")
+
+            else:
+                bot.send_message(chat_id, "Я на связи. Нажмите /start чтобы открыть мини-приложение.")
+
+        return "", 200
+
     except Exception as e:
-        log.exception("process_new_updates failed: %r", e)
-    return "", 200
+        log.exception("webhook handler failed: %r", e)
+        return "", 200
 
 # ---------- helpers ----------
 def admin_send(text, **kw):
