@@ -1,5 +1,5 @@
 # server.py — Flask 3.x compatible (webhook + commands + web_app_data)
-import os, json, logging, time, random
+import os, json, logging, time
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS, cross_origin
@@ -127,24 +127,45 @@ def collect():
     current_time = datetime.now().strftime("%H:%M %d.%m.%Y")
     
     if request_type == "support_request":
-    # Обработка заявки поддержки
-    support_topic = p.get("topic", "")
-    support_contact = p.get("contact", "")
-    support_message = p.get("message", "")
-    username = p.get("username", "")
-    
-    text = (
-        f"🆘 *ЗАПРОС ПОДДЕРЖКИ* #{request_id}\n"
-        f"╔══════════════════════\n"
-        f"║ 👤 *Клиент:* {username if username else '—'}\n"
-        f"║ 📞 *Контакт:* {support_contact if support_contact else '—'}\n"
-        f"║ 🕒 *Время:* {current_time}\n"
-        f"║ ────────────────────\n"
-        f"║ 📝 *Тема:* {support_topic}\n"
-        f"║ 💬 *Сообщение:*\n"
-        f"║ {support_message}\n"
-        f"╚══════════════════════"
-    )
+        # Обработка заявки поддержки
+        support_topic = p.get("topic", "")
+        support_contact = p.get("contact", "")
+        support_message = p.get("message", "")
+        username = p.get("username", "")
+        
+        text = (
+            f"🆘 *ЗАПРОС ПОДДЕРЖКИ* #{request_id}\n"
+            f"╔══════════════════════\n"
+            f"║ 👤 *Клиент:* {username if username else '—'}\n"
+            f"║ 📞 *Контакт:* {support_contact if support_contact else '—'}\n"
+            f"║ 🕒 *Время:* {current_time}\n"
+            f"║ ────────────────────\n"
+            f"║ 📝 *Тема:* {support_topic}\n"
+            f"║ 💬 *Сообщение:*\n"
+            f"║ {support_message}\n"
+            f"╚══════════════════════"
+        )
+        
+    else:
+        # Обработка заявки обмена
+        calc = p.get("calc") or {}
+        network = p.get("network", "?")
+        network_icon = get_network_icon(network)
+        
+        text = (
+            f"🎯 *НОВАЯ ЗАЯВКА НА ОБМЕН* #{request_id}\n"
+            f"╔══════════════════════\n"
+            f"║ 👤 *Клиент:* {p.get('username', '—')}\n"
+            f"║ {network_icon} *Сеть:* {network}\n"
+            f"║ 💰 *Сумма:* {p.get('amount','?')} USDT\n"
+            f"║ 📈 *Курс:* {p.get('usd_rub','?')} ₽\n"
+            f"║ 🕒 *Время:* {current_time}\n"
+            f"║ ────────────────────\n"
+            f"║ 💵 *К выплате:* {calc.get('result_rub','?')} ₽\n"
+            f"║ 📊 *Комиссия:* {calc.get('commission_rub','?')} ₽\n"
+            f"║ 💳 *Карта:* `{p.get('card_number','?')}`\n"
+            f"╚══════════════════════"
+        )
 
     try:
         # СОЗДАЕМ КЛАВИАТУРУ С КНОПКАМИ
@@ -216,17 +237,21 @@ def webhook():
         
         if request_type == "support_request" and isinstance(payload, dict):
             # Обработка заявки поддержки
-            support_text = payload.get("message", "")
+            support_topic = payload.get("topic", "")
+            support_contact = payload.get("contact", "")
+            support_message = payload.get("message", "")
             username = payload.get("username", "")
             
             text = (
                 f"🆘 *ЗАПРОС ПОДДЕРЖКИ* #{request_id}\n"
                 f"╔══════════════════════\n"
                 f"║ 👤 *Клиент:* {username if username else '—'}\n"
+                f"║ 📞 *Контакт:* {support_contact if support_contact else '—'}\n"
                 f"║ 🕒 *Время:* {current_time}\n"
                 f"║ ────────────────────\n"
+                f"║ 📝 *Тема:* {support_topic}\n"
                 f"║ 💬 *Сообщение:*\n"
-                f"║ {support_text}\n"
+                f"║ {support_message}\n"
                 f"╚══════════════════════"
             )
             
