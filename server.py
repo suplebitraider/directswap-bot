@@ -37,7 +37,7 @@ CORS(app, origins=[
 
 # ---------- Глобальные переменные ----------
 request_counter = 0
-user_sessions = {}  # Храним chat_id пользователей
+user_sessions = {}
 
 # ---------- helpers ----------
 def generate_request_id():
@@ -58,12 +58,6 @@ def make_open_webapp_kb():
     kb.add(InlineKeyboardButton("🚀 Открыть DirectSwap", web_app=WebAppInfo(url=WEBAPP_URL)))
     return kb
 
-def fmt_money(v):
-    try:
-        return f"{float(v):,.2f}".replace(",", " ")
-    except Exception:
-        return str(v)
-
 # ---------- Flask Routes ----------
 @app.get("/")
 def root_ok():
@@ -73,21 +67,6 @@ def root_ok():
 def healthz():
     return "ok", 200
 
-@app.get("/init")
-def init():
-    """Ручная установка вебхука."""
-    try:
-        url = f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
-        bot.remove_webhook()
-        bot.set_webhook(url=url)
-        me = bot.get_me()
-        log.info("Webhook (manual) set to %s for @%s", url, me.username)
-        return f"Webhook set to {url} for @{me.username}", 200
-    except Exception as e:
-        log.exception("init/set_webhook failed: %r", e)
-        return f"error: {e}", 500
-
-# ---------- Резервный эндпоинт для заявок ----------
 @app.post("/collect")
 @cross_origin()
 def collect():
@@ -160,8 +139,6 @@ def collect():
                 InlineKeyboardButton("✅ Обработано", callback_data=f"processed_{request_id}"),
                 InlineKeyboardButton("❌ Отклонить", callback_data=f"rejected_{request_id}")
             )
-        else:
-            keyboard.add(InlineKeyboardButton("✅ Ответить", callback_data=f"support_{request_id}"))
 
         admin_bot.send_message(
             ADMIN_TARGET_CHAT_ID, 
@@ -176,22 +153,9 @@ def collect():
         log.error("ADMIN reserve send failed: %r", e)
         return {"ok": False, "error": str(e)}, 500
 
-# --- WEBHOOK ---
-@app.post(f"/webhook/{WEBHOOK_SECRET}")
-def webhook():
-    upd = request.get_json(silent=True) or {}
-    log.info("WEBHOOK JSON[0:300]=%r", str(upd)[:300])
-
-    # Обрабатываем через основного бота
-    if upd:
-        update = telebot.types.Update.de_json(upd)
-        bot.process_new_updates([update])
-    
-    return jsonify(ok=True)
-
-# ---------- Обработка команд ----------
-@bot.message_handler(commands=["start"])
-def cmd_start(m):
+# --- Обработка команд основного бота ---
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
     welcome_text = (
         "🎉 *Добро пожаловать в DirectSwap!*\n\n"
         "💱 *Обменяйте криптовалюту по выгодному курсу:*\n"
@@ -202,230 +166,135 @@ def cmd_start(m):
     )
     
     bot.send_message(
-        m.chat.id,
+        message.chat.id,
         welcome_text,
         parse_mode="Markdown",
         reply_markup=make_open_webapp_kb()
     )
 
-@bot.message_handler(commands=["debug"])
-def cmd_debug(m):
-    text = (
-        "DEBUG\n"
-        f"BOT_ID: {m.chat.id}\n"
-        f"ADMIN_TARGET_CHAT_ID: {ADMIN_TARGET_CHAT_ID}\n"
-        f"ADMIN_ID: {ADMIN_ID}\n"
-        f"WEBAPP_URL: {WEBAPP_URL}\n"
-    )
-    bot.send_message(m.chat.id, text)
+@bot.message_handler(commands=['debug'])
+def debug_info(message):
+    text = f"DEBUG\nChat ID: {message.chat.id}\nADMIN_ID: {ADMIN_ID}"
+    bot.send_message(message.chat.id, text)
 
-# ---------- Обработка callback query ----------
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callback(call):
-    """Обработка нажатий на кнопки."""
-    try:
-        data = call.data
-        user_id = call.from_user.id
-        
-        log.info("Callback received: %s from user: %s", data, user_id)
-        
-        # Проверяем, что это админ
-        if user_id != ADMIN_ID and user_id != ADMIN_TARGET_CHAT_ID:
-            bot.answer_callback_query(call.id, text="❌ Нет доступа")
-            return
-        
-        if data.startswith("rejected_"):
-            request_id = data.replace("rejected_", "")
-            client_chat_id = user_sessions.get(request_id)
-            
-            # Обновляем сообщение
-            try:
-                original_text = call.message.text
-                new_text = original_text + f"\n\n❌ *ОТКЛОНЕНО*"
-                
-                bot.edit_message_text(
-                    chat_id=call.message.chat.id,
-                    message_id=call.message.message_id,
-                    text=new_text,
-                    parse_mode="Markdown",
-                    reply_markup=None
-                )
-            except Exception as e:
-                log.error("Ошибка при обновлении сообщения: %r", e)
-            
-            # Уведомление клиенту
-            if client_chat_id:
-                try:
-                    rejection_text = (
-                        "❌ *Ваша заявка не была обработана*\n\n"
-                        "К сожалению, мы не смогли выполнить ваш запрос. "
-                        "Пожалуйста, обратитесь в поддержку.\n\n"
-                        "💬 *По вопросам:* @directswap_support"
-                    )
-                    bot.send_message(client_chat_id, rejection_text, parse_mode="Markdown")
-                except Exception as e:
-                    log.error("Ошибка при отправке уведомления: %r", e)
-            
-            bot.answer_callback_query(call.id, text="✅ Заявка отклонена")
-            
-        elif data.startswith("processed_"):
-            request_id = data.replace("processed_", "")
-            client_chat_id = user_sessions.get(request_id)
-            
-            # Обновляем сообщение
-            try:
-                original_text = call.message.text
-                new_text = original_text + f"\n\n✅ *ОБРАБОТАНО*"
-                
-                bot.edit_message_text(
-                    chat_id=call.message.chat.id,
-                    message_id=call.message.message_id,
-                    text=new_text,
-                    parse_mode="Markdown",
-                    reply_markup=None
-                )
-            except Exception as e:
-                log.error("Ошибка при обновлении сообщения: %r", e)
-            
-            # Уведомление клиенту
-            if client_chat_id:
-                try:
-                    processed_text = (
-                        "✅ *Ваша заявка успешно обработана!*\n\n"
-                        "Средства будут зачислены в ближайшее время.\n"
-                        "Спасибо, что выбрали наш сервис! 🎉"
-                    )
-                    bot.send_message(client_chat_id, processed_text, parse_mode="Markdown")
-                except Exception as e:
-                    log.error("Ошибка при отправке уведомления: %r", e)
-            
-            bot.answer_callback_query(call.id, text="✅ Заявка обработана")
-                
-        elif data.startswith("support_"):
-            request_id = data.replace("support_", "")
-            bot.answer_callback_query(call.id, text=f"Ответьте на заявку #{request_id}")
-            
-    except Exception as e:
-        log.exception("Callback failed: %r", e)
-        try:
-            bot.answer_callback_query(call.id, text="❌ Ошибка")
-        except:
-            pass
-
-# ---------- Обработка web_app_data ----------
-@bot.message_handler(content_types=["web_app_data"])
+# --- Обработка web_app_data ---
+@bot.message_handler(content_types=['web_app_data'])
 def handle_web_app_data(message):
-    """Обработка заявок из мини-приложения."""
     try:
-        raw = message.web_app_data.data
-        log.info("WEBAPP RAW=%s", raw)
-        try:
-            data = json.loads(raw)
-        except Exception:
-            data = {"raw": raw}
-
-        # Сохраняем chat_id пользователя
-        user_chat_id = message.chat.id
-        request_type = data.get("type", "exchange_request") if isinstance(data, dict) else "exchange_request"
+        data = json.loads(message.web_app_data.data)
         request_id = generate_request_id()
-        current_time = datetime.now().strftime("%H:%M %d.%m.%Y")
+        user_sessions[request_id] = message.chat.id
         
-        user_sessions[request_id] = user_chat_id
-        log.info("Saved user session: %s -> %s", request_id, user_chat_id)
+        log.info(f"WebApp data: {data}")
         
-        if request_type == "support_request" and isinstance(data, dict):
-            support_topic = data.get("topic", "")
-            support_contact = data.get("contact", "")
-            support_message = data.get("message", "")
-            username = data.get("username", "")
-            
-            text = (
+        if data.get('type') == 'support_request':
+            # Обработка поддержки
+            support_text = (
                 f"🆘 *ЗАПРОС ПОДДЕРЖКИ* #{request_id}\n"
-                f"╔══════════════════════\n"
-                f"║ 👤 *Клиент:* {username if username else '—'}\n"
-                f"║ 📞 *Контакт:* {support_contact if support_contact else '—'}\n"
-                f"║ 🕒 *Время:* {current_time}\n"
-                f"║ ────────────────────\n"
-                f"║ 📝 *Тема:* {support_topic}\n"
-                f"║ 💬 *Сообщение:*\n"
-                f"║ {support_message}\n"
-                f"╚══════════════════════"
+                f"От: {data.get('username', '—')}\n"
+                f"Тема: {data.get('topic', '—')}\n"
+                f"Сообщение: {data.get('message', '—')}"
             )
-            
-            keyboard = InlineKeyboardMarkup()
-            if username and username.startswith('@'):
-                keyboard.add(InlineKeyboardButton(
-                    "💬 Написать клиенту", 
-                    url=f"https://t.me/{username[1:]}"
-                ))
-            keyboard.add(InlineKeyboardButton("✅ Ответить", callback_data=f"support_{request_id}"))
-            
-            admin_bot.send_message(ADMIN_TARGET_CHAT_ID, text, parse_mode="Markdown", reply_markup=keyboard)
-            bot.send_message(user_chat_id, "✅ Ваше сообщение отправлено в поддержку.")
+            admin_bot.send_message(ADMIN_TARGET_CHAT_ID, support_text, parse_mode="Markdown")
+            bot.send_message(message.chat.id, "✅ Сообщение отправлено в поддержку")
             
         else:
-            p = data if isinstance(data, dict) else {"raw": str(data)}
-            calc = p.get("calc") or {}
-            network = p.get("network", "-")
-            network_icon = get_network_icon(network)
-            
-            amt = p.get("amount", "-")
-            rate = p.get("usd_rub", "-")
-            res_rub = fmt_money(calc.get("result_rub", "-"))
-            fee_rub = fmt_money(calc.get("commission_rub", "-"))
-            card = p.get("card_number", "—")
-            uname = p.get("username", "") or ""
-            if uname and not uname.startswith("@"):
-                uname = "@" + uname
-
-            client = uname if uname else f"id:{message.from_user.id}"
-            
-            text = (
-                f"🎯 *НОВАЯ ЗАЯВКА НА ОБМЕН* #{request_id}\n"
-                f"╔══════════════════════\n"
-                f"║ 👤 *Клиент:* {client}\n"
-                f"║ {network_icon} *Сеть:* {network}\n"
-                f"║ 💰 *Сумма:* {amt} USDT\n"
-                f"║ 📈 *Курс:* {rate} ₽\n"
-                f"║ 🕒 *Время:* {current_time}\n"
-                f"║ ────────────────────\n"
-                f"║ 💵 *К выплате:* {res_rub} ₽\n"
-                f"║ 📊 *Комиссия:* {fee_rub} ₽\n"
-                f"║ 💳 *Карта:* `{card}`\n"
-                f"╚══════════════════════"
+            # Обработка обмена
+            exchange_text = (
+                f"🎯 *НОВАЯ ЗАЯВКА* #{request_id}\n"
+                f"Сеть: {data.get('network', '—')}\n"
+                f"Сумма: {data.get('amount', '—')} USDT\n"
+                f"Карта: {data.get('card_number', '—')}"
             )
-
+            
             keyboard = InlineKeyboardMarkup()
-            
-            if uname and uname.startswith('@'):
-                keyboard.add(InlineKeyboardButton(
-                    "💬 Написать клиенту", 
-                    url=f"https://t.me/{uname[1:]}"
-                ))
-            
             keyboard.row(
                 InlineKeyboardButton("✅ Обработано", callback_data=f"processed_{request_id}"),
                 InlineKeyboardButton("❌ Отклонить", callback_data=f"rejected_{request_id}")
             )
-
-            admin_bot.send_message(ADMIN_TARGET_CHAT_ID, text, parse_mode="Markdown", reply_markup=keyboard)
-            bot.send_message(user_chat_id, "✅ Заявка отправлена. Мы скоро свяжемся с вами.")
+            
+            admin_bot.send_message(
+                ADMIN_TARGET_CHAT_ID, 
+                exchange_text, 
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+            bot.send_message(message.chat.id, "✅ Заявка отправлена")
             
     except Exception as e:
-        log.exception("handle_web_app_data failed: %r", e)
+        log.error(f"WebApp error: {e}")
+        bot.send_message(message.chat.id, "❌ Ошибка отправки")
 
-# ---------- webhook setup ----------
-def _ensure_webhook_on_import():
+# --- Обработка callback для админ-бота ---
+@admin_bot.callback_query_handler(func=lambda call: True)
+def handle_admin_callback(call):
     try:
-        url = f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
-        bot.remove_webhook()
-        bot.set_webhook(url=url)
-        me = bot.get_me()
-        log.info("Webhook (import) set to %s for @%s", url, me.username)
+        data = call.data
+        request_id = data.split('_')[1] if '_' in data else ''
+        client_chat_id = user_sessions.get(request_id)
+        
+        if 'rejected' in data:
+            # Обновляем сообщение
+            admin_bot.edit_message_text(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=call.message.text + "\n\n❌ ОТКЛОНЕНО",
+                parse_mode="Markdown"
+            )
+            # Уведомляем клиента
+            if client_chat_id:
+                bot.send_message(client_chat_id, "❌ Ваша заявка отклонена")
+            admin_bot.answer_callback_query(call.id, "Заявка отклонена")
+            
+        elif 'processed' in data:
+            # Обновляем сообщение
+            admin_bot.edit_message_text(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=call.message.text + "\n\n✅ ОБРАБОТАНО", 
+                parse_mode="Markdown"
+            )
+            # Уведомляем клиента
+            if client_chat_id:
+                bot.send_message(client_chat_id, "✅ Ваша заявка обработана!")
+            admin_bot.answer_callback_query(call.id, "Заявка обработана")
+            
     except Exception as e:
-        log.exception("import set_webhook failed: %r", e)
+        log.error(f"Callback error: {e}")
+        admin_bot.answer_callback_query(call.id, "Ошибка")
 
-_ensure_webhook_on_import()
+# --- WEBHOOK обработка ---
+@app.post(f"/webhook/{WEBHOOK_SECRET}")
+def webhook():
+    """Обработка вебхука от Telegram"""
+    if request.content_type != 'application/json':
+        return jsonify({'ok': False}), 400
+        
+    json_data = request.get_json()
+    log.info(f"Webhook received: {json_data}")
+    
+    # Пробуем обработать через основного бота
+    try:
+        update = telebot.types.Update.de_json(json_data)
+        bot.process_new_updates([update])
+    except Exception as e:
+        log.error(f"Main bot processing error: {e}")
+    
+    # Пробуем обработать через админ-бота  
+    try:
+        update = telebot.types.Update.de_json(json_data)
+        admin_bot.process_new_updates([update])
+    except Exception as e:
+        log.error(f"Admin bot processing error: {e}")
+    
+    return jsonify({'ok': True})
+
+# --- Настройка вебхука при старте ---
+@app.before_request
+def setup_webhook():
+    url = f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
+    bot.remove_webhook()
+    bot.set_webhook(url=url)
 
 if __name__ == "__main__":
     app.run(host=HOST, port=PORT)
