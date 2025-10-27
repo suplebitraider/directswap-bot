@@ -37,6 +37,7 @@ CORS(app, origins=[
 
 # ---------- Глобальные переменные ----------
 request_counter = 0
+user_sessions = {}  # Храним chat_id пользователей
 
 # ---------- helpers ----------
 def generate_request_id():
@@ -235,6 +236,11 @@ def webhook():
         request_id = generate_request_id()
         current_time = datetime.now().strftime("%H:%M %d.%m.%Y")
         
+        # Сохраняем chat_id пользователя
+        user_chat_id = chat_id
+        user_sessions[request_id] = user_chat_id
+        log.info("Saved user session: %s -> %s", request_id, user_chat_id)
+        
         if request_type == "support_request" and isinstance(payload, dict):
             # Обработка заявки поддержки
             support_topic = payload.get("topic", "")
@@ -376,48 +382,108 @@ def handle_callback_query(callback_query):
         message = callback_query.message
         admin_bot.answer_callback_query(callback_query.id)
         
+        log.info("Callback received: %s", data)
+        
         if data.startswith("rejected_"):
             request_id = data.replace("rejected_", "")
-            # Отправляем уведомление клиенту (если возможно)
-            rejection_text = (
-                "❌ *Ваша заявка не была обработана*\n\n"
-                "К сожалению, мы не смогли выполнить ваш запрос. "
-                "Пожалуйста, обратитесь в поддержку или создайте новую заявку.\n\n"
-                "💬 *По вопросам:* @directswap_support"
-            )
-            
-            # Пытаемся найти оригинальное сообщение и отправить уведомление
-            try:
-                # Здесь можно добавить логику для отправки уведомления клиенту
-                # Пока просто логируем
-                log.info("Заявка %s отклонена администратором", request_id)
-            except Exception as e:
-                log.error("Ошибка при отправке уведомления клиенту: %r", e)
+            user_chat_id = user_sessions.get(request_id)
             
             # Обновляем сообщение в админ-чате
             original_text = message.text
             new_text = original_text + f"\n\n❌ *ОТКЛОНЕНО* администратором"
-            admin_bot.edit_message_text(
-                chat_id=message.chat.id,
-                message_id=message.message_id,
-                text=new_text,
-                parse_mode="Markdown"
-            )
+            
+            try:
+                admin_bot.edit_message_text(
+                    chat_id=message.chat.id,
+                    message_id=message.message_id,
+                    text=new_text,
+                    parse_mode="Markdown",
+                    reply_markup=None
+                )
+                log.info("Заявка %s отмечена как отклоненная", request_id)
+            except Exception as e:
+                log.error("Ошибка при обновлении сообщения: %r", e)
+            
+            # Отправляем уведомление клиенту
+            if user_chat_id:
+                try:
+                    rejection_text = (
+                        "❌ *Ваша заявка не была обработана*\n\n"
+                        "К сожалению, мы не смогли выполнить ваш запрос. "
+                        "Пожалуйста, обратитесь в поддержку или создайте новую заявку.\n\n"
+                        "💬 *По вопросам:* @directswap_support"
+                    )
+                    bot.send_message(user_chat_id, rejection_text, parse_mode="Markdown")
+                    log.info("Уведомление об отклонении отправлено пользователю %s", user_chat_id)
+                except Exception as e:
+                    log.error("Ошибка при отправке уведомления клиенту: %r", e)
+            else:
+                log.warning("Не найден chat_id для заявки %s", request_id)
             
         elif data.startswith("processed_"):
             request_id = data.replace("processed_", "")
+            user_chat_id = user_sessions.get(request_id)
+            
             # Обновляем сообщение в админ-чате
             original_text = message.text
             new_text = original_text + f"\n\n✅ *ОБРАБОТАНО* администратором"
-            admin_bot.edit_message_text(
-                chat_id=message.chat.id,
-                message_id=message.message_id,
-                text=new_text,
-                parse_mode="Markdown"
+            
+            try:
+                admin_bot.edit_message_text(
+                    chat_id=message.chat.id,
+                    message_id=message.message_id,
+                    text=new_text,
+                    parse_mode="Markdown",
+                    reply_markup=None
+                )
+                log.info("Заявка %s отмечена как обработанная", request_id)
+            except Exception as e:
+                log.error("Ошибка при обновлении сообщения: %r", e)
+            
+            # Отправляем уведомление клиенту
+            if user_chat_id:
+                try:
+                    processed_text = (
+                        "✅ *Ваша заявка успешно обработана!*\n\n"
+                        "Средства будут зачислены в ближайшее время.\n"
+                        "Спасибо, что выбрали наш сервис! 🎉\n\n"
+                        "💬 *По вопросам:* @directswap_support"
+                    )
+                    bot.send_message(user_chat_id, processed_text, parse_mode="Markdown")
+                    log.info("Уведомление об обработке отправлено пользователю %s", user_chat_id)
+                except Exception as e:
+                    log.error("Ошибка при отправке уведомления клиенту: %r", e)
+            else:
+                log.warning("Не найден chat_id для заявки %s", request_id)
+                
+        elif data.startswith("support_"):
+            request_id = data.replace("support_", "")
+            admin_bot.answer_callback_query(
+                callback_query.id,
+                text=f"Ответьте на заявку поддержки #{request_id}",
+                show_alert=True
             )
             
     except Exception as e:
         log.exception("handle_callback_query failed: %r", e)
+        try:
+            admin_bot.answer_callback_query(
+                callback_query.id,
+                text="Ошибка обработки",
+                show_alert=True
+            )
+        except:
+            pass
+
+# ---------- Обработка callback query для основного бота ----------
+@bot.callback_query_handler(func=lambda call: True)
+def handle_bot_callback(call):
+    """Обработка callback в основном боте."""
+    try:
+        bot.answer_callback_query(call.id)
+        log.info("Main bot callback: %s", call.data)
+    except Exception as e:
+        log.exception("Main bot callback failed: %r", e)
 
 # ---------- commands ----------
 @bot.message_handler(commands=["start"])
