@@ -88,7 +88,7 @@ def start_cmd(message):
 
 @bot.message_handler(commands=['debug'])
 def debug_cmd(message):
-    bot.send_message(message.chat.id, f"DEBUG: ChatID: {message.chat.id}, UserID: {message.from_user.id}")
+bot.send_message(message.chat.id, f"DEBUG: ChatID: {message.chat.id}, UserID: {message.from_user.id}")
 
 # ---------- ОБРАБОТКА WEB APP DATA ----------
 @bot.message_handler(content_types=['web_app_data'])
