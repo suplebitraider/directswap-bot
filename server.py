@@ -38,6 +38,7 @@ CORS(app, origins=[
 # ---------- Глобальные переменные ----------
 request_counter = 0
 user_sessions = {}  # Храним chat_id пользователей
+admin_messages = {}  # Храним message_id админ-сообщений
 
 # ---------- helpers ----------
 def generate_request_id():
@@ -52,13 +53,6 @@ def get_network_icon(network):
         "TON": "💎"
     }
     return icons.get(network, "🌐")
-
-def admin_send(text, **kw):
-    try:
-        admin_bot.send_message(ADMIN_TARGET_CHAT_ID or ADMIN_ID, text, **kw)
-        log.info("admin_bot: delivered to %s", ADMIN_TARGET_CHAT_ID or ADMIN_ID)
-    except Exception as e:
-        log.exception("admin_bot send failed: %r", e)
 
 def make_open_webapp_kb():
     kb = InlineKeyboardMarkup()
@@ -79,19 +73,6 @@ def root_ok():
 @app.get("/healthz")
 def healthz():
     return "ok", 200
-
-@app.get("/botinfo")
-def botinfo():
-    try:
-        me = bot.get_me()
-        return {
-            "ok": True,
-            "username": me.username,
-            "id": me.id,
-            "webhook": f"{WEBHOOK_BASE}/webhook/{WEBHOOK_SECRET}"
-        }, 200
-    except Exception as e:
-        return {"ok": False, "error": str(e)}, 500
 
 @app.get("/init")
 def init():
@@ -122,13 +103,11 @@ def collect():
     if not isinstance(p, dict):
         p = {"raw": str(p)}
     
-    # Определяем тип заявки
     request_type = p.get("type", "exchange_request")
     request_id = generate_request_id()
     current_time = datetime.now().strftime("%H:%M %d.%m.%Y")
     
     if request_type == "support_request":
-        # Обработка заявки поддержки
         support_topic = p.get("topic", "")
         support_contact = p.get("contact", "")
         support_message = p.get("message", "")
@@ -148,7 +127,6 @@ def collect():
         )
         
     else:
-        # Обработка заявки обмена
         calc = p.get("calc") or {}
         network = p.get("network", "?")
         network_icon = get_network_icon(network)
@@ -169,10 +147,8 @@ def collect():
         )
 
     try:
-        # СОЗДАЕМ КЛАВИАТУРУ С КНОПКАМИ
         keyboard = InlineKeyboardMarkup()
         
-        # Если есть username, добавляем кнопку "Написать клиенту"
         username = p.get('username', '')
         if username and username.startswith('@'):
             keyboard.add(InlineKeyboardButton(
@@ -180,7 +156,6 @@ def collect():
                 url=f"https://t.me/{username[1:]}"
             ))
         
-        # Кнопки действий
         if request_type == "exchange_request":
             keyboard.row(
                 InlineKeyboardButton("✅ Обработано", callback_data=f"processed_{request_id}"),
@@ -189,14 +164,18 @@ def collect():
         else:
             keyboard.add(InlineKeyboardButton("✅ Ответить", callback_data=f"support_{request_id}"))
 
-        # ОТПРАВЛЯЕМ СООБЩЕНИЕ С КНОПКАМИ
-        admin_bot.send_message(
+        # Отправляем через админ-бота
+        sent_message = admin_bot.send_message(
             ADMIN_TARGET_CHAT_ID, 
             text, 
             parse_mode="Markdown",
             reply_markup=keyboard
         )
-        log.info("ADMIN DELIVERED (HTTP reserve) with buttons - ID: %s", request_id)
+        
+        # Сохраняем ID сообщения для callback
+        admin_messages[request_id] = sent_message.message_id
+        
+        log.info("ADMIN DELIVERED (HTTP reserve) - ID: %s", request_id)
         return {"ok": True, "message": "Заявка отправлена"}
     except Exception as e:
         log.error("ADMIN reserve send failed: %r", e)
@@ -208,46 +187,138 @@ def webhook():
     upd = request.get_json(silent=True) or {}
     log.info("WEBHOOK JSON[0:300]=%r", str(upd)[:300])
 
-    # Обработка callback query для админ-бота
-    callback_query = upd.get("callback_query")
-    if callback_query:
-        # Передаем callback в админ-бота для обработки
-        admin_bot.process_new_updates([telebot.types.Update.de_json(upd)])
-        return jsonify(ok=True)
+    # Обрабатываем через основного бота (включая callback)
+    bot.process_new_updates([telebot.types.Update.de_json(upd)])
+    return jsonify(ok=True)
 
-    msg = upd.get("message") or upd.get("edited_message")
-    if not msg:
-        return jsonify(ok=True)
+# ---------- Обработка callback query ----------
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callback(call):
+    """Обработка нажатий на кнопки."""
+    try:
+        data = call.data
+        user_chat_id = call.from_user.id
+        
+        # Проверяем, что это админ (по ID)
+        if user_chat_id != ADMIN_ID and user_chat_id != ADMIN_TARGET_CHAT_ID:
+            bot.answer_callback_query(call.id, text="❌ Нет доступа")
+            return
+        
+        log.info("Callback received: %s from user: %s", data, user_chat_id)
+        
+        if data.startswith("rejected_"):
+            request_id = data.replace("rejected_", "")
+            client_chat_id = user_sessions.get(request_id)
+            
+            # Обновляем сообщение в админ-чате
+            try:
+                original_text = call.message.text
+                new_text = original_text + f"\n\n❌ *ОТКЛОНЕНО* администратором"
+                
+                bot.edit_message_text(
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.message_id,
+                    text=new_text,
+                    parse_mode="Markdown",
+                    reply_markup=None
+                )
+                log.info("Заявка %s отмечена как отклоненная", request_id)
+            except Exception as e:
+                log.error("Ошибка при обновлении сообщения: %r", e)
+            
+            # Отправляем уведомление клиенту
+            if client_chat_id:
+                try:
+                    rejection_text = (
+                        "❌ *Ваша заявка не была обработана*\n\n"
+                        "К сожалению, мы не смогли выполнить ваш запрос. "
+                        "Пожалуйста, обратитесь в поддержку или создайте новую заявку.\n\n"
+                        "💬 *По вопросам:* @directswap_support"
+                    )
+                    bot.send_message(client_chat_id, rejection_text, parse_mode="Markdown")
+                    log.info("Уведомление об отклонении отправлено пользователю %s", client_chat_id)
+                except Exception as e:
+                    log.error("Ошибка при отправке уведомления клиенту: %r", e)
+            
+            bot.answer_callback_query(call.id, text="✅ Заявка отклонена")
+            
+        elif data.startswith("processed_"):
+            request_id = data.replace("processed_", "")
+            client_chat_id = user_sessions.get(request_id)
+            
+            # Обновляем сообщение в админ-чате
+            try:
+                original_text = call.message.text
+                new_text = original_text + f"\n\n✅ *ОБРАБОТАНО* администратором"
+                
+                bot.edit_message_text(
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.message_id,
+                    text=new_text,
+                    parse_mode="Markdown",
+                    reply_markup=None
+                )
+                log.info("Заявка %s отмечена как обработанная", request_id)
+            except Exception as e:
+                log.error("Ошибка при обновлении сообщения: %r", e)
+            
+            # Отправляем уведомление клиенту
+            if client_chat_id:
+                try:
+                    processed_text = (
+                        "✅ *Ваша заявка успешно обработана!*\n\n"
+                        "Средства будут зачислены в ближайшее время.\n"
+                        "Спасибо, что выбрали наш сервис! 🎉\n\n"
+                        "💬 *По вопросам:* @directswap_support"
+                    )
+                    bot.send_message(client_chat_id, processed_text, parse_mode="Markdown")
+                    log.info("Уведомление об обработке отправлено пользователю %s", client_chat_id)
+                except Exception as e:
+                    log.error("Ошибка при отправке уведомления клиенту: %r", e)
+            
+            bot.answer_callback_query(call.id, text="✅ Заявка обработана")
+                
+        elif data.startswith("support_"):
+            request_id = data.replace("support_", "")
+            bot.answer_callback_query(
+                call.id,
+                text=f"Ответьте на заявку поддержки #{request_id}",
+                show_alert=False
+            )
+            
+    except Exception as e:
+        log.exception("Callback failed: %r", e)
+        try:
+            bot.answer_callback_query(call.id, text="❌ Ошибка обработки")
+        except:
+            pass
 
-    chat_id = msg.get("chat", {}).get("id")
-    text = (msg.get("text") or "").strip()
-
-    # 1) Данные из мини-аппа
-    wad = msg.get("web_app_data")
-    if wad and isinstance(wad, dict):
-        raw = wad.get("data") or ""
+# ---------- Обработка web_app_data ----------
+@bot.message_handler(content_types=["web_app_data"])
+def handle_web_app_data(message):
+    """Обработка заявок из мини-приложения."""
+    try:
+        raw = message.web_app_data.data
         log.info("WEBAPP RAW=%s", raw)
         try:
-            payload = json.loads(raw)
+            data = json.loads(raw)
         except Exception:
-            payload = {"raw": raw}
+            data = {"raw": raw}
 
-        # Определяем тип заявки
-        request_type = payload.get("type", "exchange_request") if isinstance(payload, dict) else "exchange_request"
+        # Сохраняем chat_id пользователя
+        user_chat_id = message.chat.id
+        request_type = data.get("type", "exchange_request") if isinstance(data, dict) else "exchange_request"
         request_id = generate_request_id()
         current_time = datetime.now().strftime("%H:%M %d.%m.%Y")
         
-        # Сохраняем chat_id пользователя
-        user_chat_id = chat_id
         user_sessions[request_id] = user_chat_id
         log.info("Saved user session: %s -> %s", request_id, user_chat_id)
         
-        if request_type == "support_request" and isinstance(payload, dict):
-            # Обработка заявки поддержки
-            support_topic = payload.get("topic", "")
-            support_contact = payload.get("contact", "")
-            support_message = payload.get("message", "")
-            username = payload.get("username", "")
+        if request_type == "support_request" and isinstance(data, dict):
+            support_topic = data.get("topic", "")
+            support_contact = data.get("contact", "")
+            support_message = data.get("message", "")
+            username = data.get("username", "")
             
             text = (
                 f"🆘 *ЗАПРОС ПОДДЕРЖКИ* #{request_id}\n"
@@ -277,11 +348,10 @@ def webhook():
                 reply_markup=keyboard
             )
             
-            bot.send_message(chat_id, "✅ Ваше сообщение отправлено в поддержку. Мы ответим вам в ближайшее время.")
+            bot.send_message(user_chat_id, "✅ Ваше сообщение отправлено в поддержку. Мы ответим вам в ближайшее время.")
             
         else:
-            # Обработка заявки обмена
-            p = payload if isinstance(payload, dict) else {"raw": str(payload)}
+            p = data if isinstance(data, dict) else {"raw": str(data)}
             calc = p.get("calc") or {}
             network = p.get("network", "-")
             network_icon = get_network_icon(network)
@@ -295,7 +365,7 @@ def webhook():
             if uname and not uname.startswith("@"):
                 uname = "@" + uname
 
-            client = uname if uname else f"id:{msg.get('from', {}).get('id', '?')}"
+            client = uname if uname else f"id:{message.from_user.id}"
             
             text = (
                 f"🎯 *НОВАЯ ЗАЯВКА НА ОБМЕН* #{request_id}\n"
@@ -332,160 +402,10 @@ def webhook():
                 reply_markup=keyboard
             )
             
-            bot.send_message(chat_id, "✅ Заявка отправлена. Мы скоро свяжемся с вами.")
-
-        return jsonify(ok=True)
-
-    # 2) Обычные команды (/start, /debug, /testadmin)
-    if text in ("/start", "/init"):
-        welcome_text = (
-            "🎉 *Добро пожаловать в DirectSwap!*\n\n"
-            "💱 *Обменяйте криптовалюту по выгодному курсу:*\n"
-            "• USDT → RUB\n" 
-            "• Быстро и безопасно\n"
-            "• Поддержка 24/7\n\n"
-            "🚀 *Начните обмен - нажмите кнопку ниже!*"
-        )
-        
-        bot.send_message(
-            chat_id,
-            welcome_text,
-            parse_mode="Markdown",
-            reply_markup=make_open_webapp_kb()
-        )
-        return jsonify(ok=True)
-
-    if text in ("/debug", "/testadmin"):
-        admin_ok = "ON" if ADMIN_BOT_TOKEN else "OFF"
-        dbg = (
-            "DEBUG\n"
-            f"admin_bot: {admin_ok}\n"
-            f"ADMIN_TARGET_CHAT_ID: {ADMIN_TARGET_CHAT_ID}\n"
-            f"WEBAPP_URL: {WEBAPP_URL}\n"
-            f"WEBHOOK_BASE: {WEBHOOK_BASE}\n"
-        )
-        bot.send_message(chat_id, dbg)
-        try:
-            admin_bot.send_message(ADMIN_TARGET_CHAT_ID, "🧪 TEST: Проверка доставки в админ-чат/бота")
-        except Exception as e:
-            log.error("Admin test send failed: %r", e)
-        return jsonify(ok=True)
-
-    # прочее — просто лог
-    log.info("MSG: chat_id=%s text=%r", chat_id, text)
-    return jsonify(ok=True)
-
-# ---------- Обработка callback query для админ-бота ----------
-@admin_bot.callback_query_handler(func=lambda call: True)
-def handle_admin_callback(call):
-    """Обработка callback в админ-боте."""
-    try:
-        data = call.data
-        message = call.message
-        admin_bot.answer_callback_query(call.id)
-        
-        log.info("Admin callback received: %s", data)
-        
-        if data.startswith("rejected_"):
-            request_id = data.replace("rejected_", "")
-            user_chat_id = user_sessions.get(request_id)
-            
-            # Обновляем сообщение в админ-чате
-            original_text = message.text
-            new_text = original_text + f"\n\n❌ *ОТКЛОНЕНО* администратором"
-            
-            try:
-                admin_bot.edit_message_text(
-                    chat_id=message.chat.id,
-                    message_id=message.message_id,
-                    text=new_text,
-                    parse_mode="Markdown",
-                    reply_markup=None
-                )
-                log.info("Заявка %s отмечена как отклоненная", request_id)
-            except Exception as e:
-                log.error("Ошибка при обновлении сообщения: %r", e)
-            
-            # Отправляем уведомление клиенту
-            if user_chat_id:
-                try:
-                    rejection_text = (
-                        "❌ *Ваша заявка не была обработана*\n\n"
-                        "К сожалению, мы не смогли выполнить ваш запрос. "
-                        "Пожалуйста, обратитесь в поддержку или создайте новую заявку.\n\n"
-                        "💬 *По вопросам:* @directswap_support"
-                    )
-                    bot.send_message(user_chat_id, rejection_text, parse_mode="Markdown")
-                    log.info("Уведомление об отклонении отправлено пользователю %s", user_chat_id)
-                except Exception as e:
-                    log.error("Ошибка при отправке уведомления клиенту: %r", e)
-            else:
-                log.warning("Не найден chat_id для заявки %s", request_id)
-            
-        elif data.startswith("processed_"):
-            request_id = data.replace("processed_", "")
-            user_chat_id = user_sessions.get(request_id)
-            
-            # Обновляем сообщение в админ-чате
-            original_text = message.text
-            new_text = original_text + f"\n\n✅ *ОБРАБОТАНО* администратором"
-            
-            try:
-                admin_bot.edit_message_text(
-                    chat_id=message.chat.id,
-                    message_id=message.message_id,
-                    text=new_text,
-                    parse_mode="Markdown",
-                    reply_markup=None
-                )
-                log.info("Заявка %s отмечена как обработанная", request_id)
-            except Exception as e:
-                log.error("Ошибка при обновлении сообщения: %r", e)
-            
-            # Отправляем уведомление клиенту
-            if user_chat_id:
-                try:
-                    processed_text = (
-                        "✅ *Ваша заявка успешно обработана!*\n\n"
-                        "Средства будут зачислены в ближайшее время.\n"
-                        "Спасибо, что выбрали наш сервис! 🎉\n\n"
-                        "💬 *По вопросам:* @directswap_support"
-                    )
-                    bot.send_message(user_chat_id, processed_text, parse_mode="Markdown")
-                    log.info("Уведомление об обработке отправлено пользователю %s", user_chat_id)
-                except Exception as e:
-                    log.error("Ошибка при отправке уведомления клиенту: %r", e)
-            else:
-                log.warning("Не найден chat_id для заявки %s", request_id)
-                
-        elif data.startswith("support_"):
-            request_id = data.replace("support_", "")
-            admin_bot.answer_callback_query(
-                call.id,
-                text=f"Ответьте на заявку поддержки #{request_id}",
-                show_alert=True
-            )
+            bot.send_message(user_chat_id, "✅ Заявка отправлена. Мы скоро свяжемся с вами.")
             
     except Exception as e:
-        log.exception("Admin callback failed: %r", e)
-        try:
-            admin_bot.answer_callback_query(
-                call.id,
-                text="Ошибка обработки",
-                show_alert=True
-            )
-        except:
-            pass
-
-# ---------- Обработка callback query для основного бота ----------
-@bot.callback_query_handler(func=lambda call: True)
-def handle_bot_callback(call):
-    """Обработка callback в основном боте."""
-    try:
-        bot.answer_callback_query(call.id)
-        log.info("Main bot callback: %s", call.data)
-    except Exception as e:
-        log.exception("Main bot callback failed: %r", e)
+        log.exception("handle_web_app_data failed: %r", e)
 
 # ---------- commands ----------
 @bot.message_handler(commands=["start"])
@@ -510,23 +430,12 @@ def cmd_start(m):
 def cmd_debug(m):
     text = (
         "DEBUG\n"
-        f"admin_bot: ON\n"
+        f"BOT_ID: {m.chat.id}\n"
         f"ADMIN_TARGET_CHAT_ID: {ADMIN_TARGET_CHAT_ID}\n"
         f"ADMIN_ID: {ADMIN_ID}\n"
         f"WEBAPP_URL: {WEBAPP_URL}\n"
-        f"WEBHOOK_BASE: {WEBHOOK_BASE}\n"
-        f"WEBHOOK_SECRET: {WEBHOOK_SECRET}\n"
     )
     bot.send_message(m.chat.id, text)
-
-@bot.message_handler(commands=["testadmin"])
-def cmd_testadmin(m):
-    try:
-        admin_send("🧪 TEST: Проверка доставки в админ-чат/бота")
-        bot.send_message(m.chat.id, "Ок, тест отправлен в админ-бот.")
-    except Exception as e:
-        bot.send_message(m.chat.id, "⚠️ Admin bot failed. Mirror copy:\n\n🧪 TEST: Проверка доставки в админ-чат/бота")
-        log.exception("testadmin failed: %r", e)
 
 # ---------- webhook setup ----------
 def _ensure_webhook_on_import():
