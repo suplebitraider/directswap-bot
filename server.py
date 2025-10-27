@@ -67,7 +67,6 @@ def init():
         log.exception("init/set_webhook failed: %r", e)
         return f"error: {e}", 500
 
-# --- WEBHOOK ---
 @app.post(f"/webhook/{WEBHOOK_SECRET}")
 def webhook():
     upd = request.get_json(silent=True) or {}
@@ -75,49 +74,42 @@ def webhook():
 
     msg = upd.get("message") or upd.get("edited_message")
     if not msg:
-        return jsonify(ok=True)  # пришло что-то неинтересное
+        return jsonify(ok=True)
 
     chat_id = msg.get("chat", {}).get("id")
     text = (msg.get("text") or "").strip()
 
-    # 1) Данные из мини-аппа
+    # === 1) ДАННЫЕ ИЗ МИНИ-ПРИЛОЖЕНИЯ ===
     wad = msg.get("web_app_data")
     if wad and isinstance(wad, dict):
         raw = wad.get("data") or ""
         log.info("WEBAPP RAW=%s", raw)
+
         try:
             payload = json.loads(raw)
         except Exception:
             payload = {"raw": raw}
 
-        # формируем понятное админ-сообщение
         p = payload if isinstance(payload, dict) else {"raw": str(payload)}
+        calc = p.get("calc") or {}
+
         lines = [
             "💠 *Новая заявка*",
             f"Сеть: *{p.get('network','?')}*",
             f"Сумма: *{p.get('amount','?')} USDT*",
             f"Курс: *{p.get('usd_rub','?')} ₽*",
-        ]
-        calc = p.get("calc") or {}
-        lines += [
             f"Итог (RUB): *{calc.get('result_rub','?')}*",
             f"Комиссия сервиса: *{calc.get('commission_rub','?')}*",
-        ]
-        lines += [
             f"Карта: *{p.get('card_number','?')}*",
-            f"Telegram: *{p.get('username','—')}*"
+            f"Telegram: *{p.get('username','—')}*",
         ]
         admin_text = "\n".join(lines)
 
-        # отправка в админ-бота с ретраями
+        # отправка в админ-бот с ретраями
         try:
             for i in range(3):
                 try:
-                    admin_bot.send_message(
-                        ADMIN_TARGET_CHAT_ID,
-                        admin_text,
-                        parse_mode="Markdown"
-                    )
+                    admin_bot.send_message(ADMIN_TARGET_CHAT_ID, admin_text, parse_mode="Markdown")
                     log.info("ADMIN DELIVERED")
                     break
                 except Exception as e:
@@ -126,39 +118,31 @@ def webhook():
         except Exception as e:
             log.error("ADMIN final fail: %r", e)
 
-        # ответ пользователю (необязательно)
-        try:
-            bot.answer_web_app_query  # если вдруг используется inline-mode
-        except Exception:
-            pass
-
         return jsonify(ok=True)
 
-    # 2) Обычные команды (/start, /debug, /testadmin)
+    # === 2) Команды ===
     if text in ("/start", "/init"):
         bot.send_message(chat_id, "Готово. Нажмите *Начать обмен* в меню.", parse_mode="Markdown")
         return jsonify(ok=True)
 
     if text in ("/debug", "/testadmin"):
-        admin_ok = "ON" if ADMIN_BOT_TOKEN else "OFF"
         dbg = (
             "DEBUG\n"
-            f"admin_bot: {admin_ok}\n"
+            f"admin_bot: {'ON' if ADMIN_BOT_TOKEN else 'OFF'}\n"
             f"ADMIN_TARGET_CHAT_ID: {ADMIN_TARGET_CHAT_ID}\n"
             f"WEBAPP_URL: {WEBAPP_URL}\n"
             f"WEBHOOK_BASE: {WEBHOOK_BASE}\n"
         )
         bot.send_message(chat_id, dbg)
-        # тест в админ-чат
         try:
             admin_bot.send_message(ADMIN_TARGET_CHAT_ID, "🧪 TEST: Проверка доставки в админ-чат/бота")
         except Exception as e:
             log.error("Admin test send failed: %r", e)
         return jsonify(ok=True)
 
-    # прочее — просто лог
     log.info("MSG: chat_id=%s text=%r", chat_id, text)
     return jsonify(ok=True)
+
 
 # ---------- helpers ----------
 def admin_send(text, **kw):
