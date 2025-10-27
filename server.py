@@ -1,5 +1,6 @@
 # server.py — Flask 3.x compatible (webhook + commands + web_app_data)
-import os, json, logging, time
+import os, json, logging, time, random
+from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS, cross_origin
 import telebot
@@ -34,6 +35,42 @@ CORS(app, origins=[
     "https://web.telegram.org"
 ])
 
+# ---------- Глобальные переменные ----------
+request_counter = 0
+
+# ---------- helpers ----------
+def generate_request_id():
+    global request_counter
+    request_counter += 1
+    return f"{request_counter:03d}"
+
+def get_network_icon(network):
+    icons = {
+        "TRC20": "⏩",
+        "ERC20": "Ⓜ️", 
+        "TON": "💎"
+    }
+    return icons.get(network, "🌐")
+
+def admin_send(text, **kw):
+    try:
+        admin_bot.send_message(ADMIN_TARGET_CHAT_ID or ADMIN_ID, text, **kw)
+        log.info("admin_bot: delivered to %s", ADMIN_TARGET_CHAT_ID or ADMIN_ID)
+    except Exception as e:
+        log.exception("admin_bot send failed: %r", e)
+
+def make_open_webapp_kb():
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("🚀 Открыть DirectSwap", web_app=WebAppInfo(url=WEBAPP_URL)))
+    return kb
+
+def fmt_money(v):
+    try:
+        return f"{float(v):,.2f}".replace(",", " ")
+    except Exception:
+        return str(v)
+
+# ---------- Flask Routes ----------
 @app.get("/")
 def root_ok():
     return "DirectSwap backend OK", 200
@@ -83,23 +120,78 @@ def collect():
 
     if not isinstance(p, dict):
         p = {"raw": str(p)}
-    calc = p.get("calc") or {}
-
-    lines = [
-        "💠 *Новая заявка* (HTTP резерв)",
-        f"Сеть: *{p.get('network','?')}*",
-        f"Сумма: *{p.get('amount','?')} USDT*", 
-        f"Курс: *{p.get('usd_rub','?')} ₽*",
-        f"Итог (RUB): *{calc.get('result_rub','?')}*",
-        f"Комиссия сервиса: *{calc.get('commission_rub','?')}*",
-        f"Карта: *{p.get('card_number','?')}*",
-        f"Telegram: *{p.get('username','—')}*",
-    ]
-    admin_text = "\n".join(lines)
+    
+    # Определяем тип заявки
+    request_type = p.get("type", "exchange_request")
+    request_id = generate_request_id()
+    current_time = datetime.now().strftime("%H:%M %d.%m.%Y")
+    
+    if request_type == "support_request":
+        # Обработка заявки поддержки
+        support_text = p.get("message", "")
+        username = p.get("username", "")
+        
+        text = (
+            f"🆘 *ЗАПРОС ПОДДЕРЖКИ* #{request_id}\n"
+            f"╔══════════════════════\n"
+            f"║ 👤 *Клиент:* {username if username else '—'}\n"
+            f"║ 🕒 *Время:* {current_time}\n"
+            f"║ ────────────────────\n"
+            f"║ 💬 *Сообщение:*\n"
+            f"║ {support_text}\n"
+            f"╚══════════════════════"
+        )
+        
+    else:
+        # Обработка заявки обмена
+        calc = p.get("calc") or {}
+        network = p.get("network", "?")
+        network_icon = get_network_icon(network)
+        
+        text = (
+            f"🎯 *НОВАЯ ЗАЯВКА НА ОБМЕН* #{request_id}\n"
+            f"╔══════════════════════\n"
+            f"║ 👤 *Клиент:* {p.get('username', '—')}\n"
+            f"║ {network_icon} *Сеть:* {network}\n"
+            f"║ 💰 *Сумма:* {p.get('amount','?')} USDT\n"
+            f"║ 📈 *Курс:* {p.get('usd_rub','?')} ₽\n"
+            f"║ 🕒 *Время:* {current_time}\n"
+            f"║ ────────────────────\n"
+            f"║ 💵 *К выплате:* {calc.get('result_rub','?')} ₽\n"
+            f"║ 📊 *Комиссия:* {calc.get('commission_rub','?')} ₽\n"
+            f"║ 💳 *Карта:* `{p.get('card_number','?')}`\n"
+            f"╚══════════════════════"
+        )
 
     try:
-        admin_bot.send_message(ADMIN_TARGET_CHAT_ID, admin_text, parse_mode="Markdown")
-        log.info("ADMIN DELIVERED (HTTP reserve)")
+        # СОЗДАЕМ КЛАВИАТУРУ С КНОПКАМИ
+        keyboard = InlineKeyboardMarkup()
+        
+        # Если есть username, добавляем кнопку "Написать клиенту"
+        username = p.get('username', '')
+        if username and username.startswith('@'):
+            keyboard.add(InlineKeyboardButton(
+                "💬 Написать клиенту", 
+                url=f"https://t.me/{username[1:]}"
+            ))
+        
+        # Кнопки действий
+        if request_type == "exchange_request":
+            keyboard.row(
+                InlineKeyboardButton("✅ Обработано", callback_data=f"processed_{request_id}"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"rejected_{request_id}")
+            )
+        else:
+            keyboard.add(InlineKeyboardButton("✅ Ответить", callback_data=f"support_{request_id}"))
+
+        # ОТПРАВЛЯЕМ СООБЩЕНИЕ С КНОПКАМИ
+        admin_bot.send_message(
+            ADMIN_TARGET_CHAT_ID, 
+            text, 
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+        log.info("ADMIN DELIVERED (HTTP reserve) with buttons - ID: %s", request_id)
         return {"ok": True, "message": "Заявка отправлена"}
     except Exception as e:
         log.error("ADMIN reserve send failed: %r", e)
@@ -110,6 +202,12 @@ def collect():
 def webhook():
     upd = request.get_json(silent=True) or {}
     log.info("WEBHOOK JSON[0:300]=%r", str(upd)[:300])
+
+    # Обработка callback query (нажатия на кнопки)
+    callback_query = upd.get("callback_query")
+    if callback_query:
+        handle_callback_query(callback_query)
+        return jsonify(ok=True)
 
     msg = upd.get("message") or upd.get("edited_message")
     if not msg:
@@ -128,41 +226,118 @@ def webhook():
         except Exception:
             payload = {"raw": raw}
 
-        p = payload if isinstance(payload, dict) else {"raw": str(payload)}
-        calc = p.get("calc") or {}
-        lines = [
-            "💠 *Новая заявка*",
-            f"Сеть: *{p.get('network','?')}*",
-            f"Сумма: *{p.get('amount','?')} USDT*",
-            f"Курс: *{p.get('usd_rub','?')} ₽*",
-            f"Итог (RUB): *{calc.get('result_rub','?')}*", 
-            f"Комиссия сервиса: *{calc.get('commission_rub','?')}*",
-            f"Карта: *{p.get('card_number','?')}*",
-            f"Telegram: *{p.get('username','—')}*"
-        ]
-        admin_text = "\n".join(lines)
+        # Определяем тип заявки
+        request_type = payload.get("type", "exchange_request") if isinstance(payload, dict) else "exchange_request"
+        request_id = generate_request_id()
+        current_time = datetime.now().strftime("%H:%M %d.%m.%Y")
+        
+        if request_type == "support_request" and isinstance(payload, dict):
+            # Обработка заявки поддержки
+            support_text = payload.get("message", "")
+            username = payload.get("username", "")
+            
+            text = (
+                f"🆘 *ЗАПРОС ПОДДЕРЖКИ* #{request_id}\n"
+                f"╔══════════════════════\n"
+                f"║ 👤 *Клиент:* {username if username else '—'}\n"
+                f"║ 🕒 *Время:* {current_time}\n"
+                f"║ ────────────────────\n"
+                f"║ 💬 *Сообщение:*\n"
+                f"║ {support_text}\n"
+                f"╚══════════════════════"
+            )
+            
+            keyboard = InlineKeyboardMarkup()
+            if username and username.startswith('@'):
+                keyboard.add(InlineKeyboardButton(
+                    "💬 Написать клиенту", 
+                    url=f"https://t.me/{username[1:]}"
+                ))
+            keyboard.add(InlineKeyboardButton("✅ Ответить", callback_data=f"support_{request_id}"))
+            
+            admin_bot.send_message(
+                ADMIN_TARGET_CHAT_ID,
+                text,
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+            
+            bot.send_message(chat_id, "✅ Ваше сообщение отправлено в поддержку. Мы ответим вам в ближайшее время.")
+            
+        else:
+            # Обработка заявки обмена
+            p = payload if isinstance(payload, dict) else {"raw": str(payload)}
+            calc = p.get("calc") or {}
+            network = p.get("network", "-")
+            network_icon = get_network_icon(network)
+            
+            amt = p.get("amount", "-")
+            rate = p.get("usd_rub", "-")
+            res_rub = fmt_money(calc.get("result_rub", "-"))
+            fee_rub = fmt_money(calc.get("commission_rub", "-"))
+            card = p.get("card_number", "—")
+            uname = p.get("username", "") or ""
+            if uname and not uname.startswith("@"):
+                uname = "@" + uname
 
-        try:
-            for i in range(3):
-                try:
-                    admin_bot.send_message(
-                        ADMIN_TARGET_CHAT_ID,
-                        admin_text, 
-                        parse_mode="Markdown"
-                    )
-                    log.info("ADMIN DELIVERED")
-                    break
-                except Exception as e:
-                    log.warning("ADMIN send fail try=%s: %r", i+1, e)
-                    time.sleep(0.8)
-        except Exception as e:
-            log.error("ADMIN final fail: %r", e)
+            client = uname if uname else f"id:{msg.get('from', {}).get('id', '?')}"
+            
+            text = (
+                f"🎯 *НОВАЯ ЗАЯВКА НА ОБМЕН* #{request_id}\n"
+                f"╔══════════════════════\n"
+                f"║ 👤 *Клиент:* {client}\n"
+                f"║ {network_icon} *Сеть:* {network}\n"
+                f"║ 💰 *Сумма:* {amt} USDT\n"
+                f"║ 📈 *Курс:* {rate} ₽\n"
+                f"║ 🕒 *Время:* {current_time}\n"
+                f"║ ────────────────────\n"
+                f"║ 💵 *К выплате:* {res_rub} ₽\n"
+                f"║ 📊 *Комиссия:* {fee_rub} ₽\n"
+                f"║ 💳 *Карта:* `{card}`\n"
+                f"╚══════════════════════"
+            )
+
+            keyboard = InlineKeyboardMarkup()
+            
+            if uname and uname.startswith('@'):
+                keyboard.add(InlineKeyboardButton(
+                    "💬 Написать клиенту", 
+                    url=f"https://t.me/{uname[1:]}"
+                ))
+            
+            keyboard.row(
+                InlineKeyboardButton("✅ Обработано", callback_data=f"processed_{request_id}"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"rejected_{request_id}")
+            )
+
+            admin_bot.send_message(
+                ADMIN_TARGET_CHAT_ID,
+                text,
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+            
+            bot.send_message(chat_id, "✅ Заявка отправлена. Мы скоро свяжемся с вами.")
 
         return jsonify(ok=True)
 
-    # 2) Обычные команды
+    # 2) Обычные команды (/start, /debug, /testadmin)
     if text in ("/start", "/init"):
-        bot.send_message(chat_id, "Готово. Нажмите *Начать обмен* в меню.", parse_mode="Markdown")
+        welcome_text = (
+            "🎉 *Добро пожаловать в DirectSwap!*\n\n"
+            "💱 *Обменяйте криптовалюту по выгодному курсу:*\n"
+            "• USDT → RUB\n" 
+            "• Быстро и безопасно\n"
+            "• Поддержка 24/7\n\n"
+            "🚀 *Начните обмен - нажмите кнопку ниже!*"
+        )
+        
+        bot.send_message(
+            chat_id,
+            welcome_text,
+            parse_mode="Markdown",
+            reply_markup=make_open_webapp_kb()
+        )
         return jsonify(ok=True)
 
     if text in ("/debug", "/testadmin"):
@@ -181,21 +356,101 @@ def webhook():
             log.error("Admin test send failed: %r", e)
         return jsonify(ok=True)
 
+    # прочее — просто лог
     log.info("MSG: chat_id=%s text=%r", chat_id, text)
     return jsonify(ok=True)
 
-# ---------- helpers ----------
-def admin_send(text, **kw):
+# ---------- Обработка callback query ----------
+def handle_callback_query(callback_query):
+    """Обработка нажатий на кнопки в админ-боте."""
     try:
-        admin_bot.send_message(ADMIN_TARGET_CHAT_ID or ADMIN_ID, text, **kw)
-        log.info("admin_bot: delivered to %s", ADMIN_TARGET_CHAT_ID or ADMIN_ID)
+        data = callback_query.data
+        message = callback_query.message
+        admin_bot.answer_callback_query(callback_query.id)
+        
+        if data.startswith("rejected_"):
+            request_id = data.replace("rejected_", "")
+            # Отправляем уведомление клиенту (если возможно)
+            rejection_text = (
+                "❌ *Ваша заявка не была обработана*\n\n"
+                "К сожалению, мы не смогли выполнить ваш запрос. "
+                "Пожалуйста, обратитесь в поддержку или создайте новую заявку.\n\n"
+                "💬 *По вопросам:* @directswap_support"
+            )
+            
+            # Пытаемся найти оригинальное сообщение и отправить уведомление
+            try:
+                # Здесь можно добавить логику для отправки уведомления клиенту
+                # Пока просто логируем
+                log.info("Заявка %s отклонена администратором", request_id)
+            except Exception as e:
+                log.error("Ошибка при отправке уведомления клиенту: %r", e)
+            
+            # Обновляем сообщение в админ-чате
+            original_text = message.text
+            new_text = original_text + f"\n\n❌ *ОТКЛОНЕНО* администратором"
+            admin_bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+                text=new_text,
+                parse_mode="Markdown"
+            )
+            
+        elif data.startswith("processed_"):
+            request_id = data.replace("processed_", "")
+            # Обновляем сообщение в админ-чате
+            original_text = message.text
+            new_text = original_text + f"\n\n✅ *ОБРАБОТАНО* администратором"
+            admin_bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+                text=new_text,
+                parse_mode="Markdown"
+            )
+            
     except Exception as e:
-        log.exception("admin_bot send failed: %r", e)
+        log.exception("handle_callback_query failed: %r", e)
 
-def make_open_webapp_kb():
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("Открыть DirectSwap 💱", web_app=WebAppInfo(url=WEBAPP_URL)))
-    return kb
+# ---------- commands ----------
+@bot.message_handler(commands=["start"])
+def cmd_start(m):
+    welcome_text = (
+        "🎉 *Добро пожаловать в DirectSwap!*\n\n"
+        "💱 *Обменяйте криптовалюту по выгодному курсу:*\n"
+        "• USDT → RUB\n" 
+        "• Быстро и безопасно\n"
+        "• Поддержка 24/7\n\n"
+        "🚀 *Начните обмен - нажмите кнопку ниже!*"
+    )
+    
+    bot.send_message(
+        m.chat.id,
+        welcome_text,
+        parse_mode="Markdown",
+        reply_markup=make_open_webapp_kb()
+    )
+
+@bot.message_handler(commands=["debug"])
+def cmd_debug(m):
+    text = (
+        "DEBUG\n"
+        f"admin_bot: ON\n"
+        f"ADMIN_TARGET_CHAT_ID: {ADMIN_TARGET_CHAT_ID}\n"
+        f"ADMIN_ID: {ADMIN_ID}\n"
+        f"WEBAPP_URL: {WEBAPP_URL}\n"
+        f"WEBHOOK_BASE: {WEBHOOK_BASE}\n"
+        f"WEBHOOK_SECRET: {WEBHOOK_SECRET}\n"
+    )
+    bot.send_message(m.chat.id, text)
+
+@bot.message_handler(commands=["testadmin"])
+def cmd_testadmin(m):
+    try:
+        admin_send("🧪 TEST: Проверка доставки в админ-чат/бота")
+        bot.send_message(m.chat.id, "Ок, тест отправлен в админ-бот.")
+    except Exception as e:
+        bot.send_message(m.chat.id, "⚠️ Admin bot failed. Mirror copy:\n\n🧪 TEST: Проверка доставки в админ-чат/бота")
+        log.exception("testadmin failed: %r", e)
 
 # ---------- webhook setup ----------
 def _ensure_webhook_on_import():
