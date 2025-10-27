@@ -1,8 +1,12 @@
 # server.py — Flask 3.x compatible (webhook + commands + web_app_data)
-import os, json, logging
-from flask import Flask, request
+from flask import Flask, request, jsonify   # ← jsonify добавили здесь
+import json                                 # ← чтобы json.loads работал
+import time
+import logging
+import os
+
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+
 
 # ---------- logging ----------
 logging.basicConfig(level=logging.INFO)
