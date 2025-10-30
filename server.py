@@ -24,15 +24,24 @@ app = Flask(__name__)
 # Простой обработчик команд
 @bot.message_handler(commands=['start', 'test'])
 def handle_commands(message):
-    log.info(f"Command {message.text} from {message.chat.id}")
-    
-    if message.text == '/start':
-        keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton("✔ открыть обменник", web_app=WebAppInfo(url=WEBAPP_URL)))
-        bot.send_message(message.chat.id, "Добро пожаловать! Нажмите кнопку ниже:", reply_markup=keyboard)
-    else:
-        bot.send_message(message.chat.id, "✅ Бот работает!")
-
+    try:
+        log.info(f"Command {message.text} from {message.chat.id}")
+        
+        if message.text == '/start':
+            keyboard = InlineKeyboardMarkup()
+            keyboard.add(InlineKeyboardButton("✔ открыть обменник", web_app=WebAppInfo(url=WEBAPP_URL)))
+            
+            log.info(f"Sending start message to {message.chat.id}")
+            sent_msg = bot.send_message(message.chat.id, "Добро пожаловать! Нажмите кнопку ниже:", reply_markup=keyboard)
+            log.info(f"Message sent successfully: {sent_msg.message_id}")
+            
+        else:
+            log.info(f"Sending test response to {message.chat.id}")
+            sent_msg = bot.send_message(message.chat.id, "✅ Бот работает!")
+            log.info(f"Test message sent: {sent_msg.message_id}")
+            
+    except Exception as e:
+        log.error(f"Error sending message: {e}")
 # Обработчик всех текстовых сообщений
 @bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
