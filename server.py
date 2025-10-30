@@ -163,28 +163,26 @@ def collect():
         )
 
     try:
-        # СОЗДАЕМ КЛАВИАТУРУ ТОЛЬКО С КНОПКОЙ "ОТВЕТИТЬ"
-        keyboard = InlineKeyboardMarkup()
+        # СОЗДАЕМ КЛАВИАТУРУ ТОЛЬКО С КНОПКОЙ "НАПИСАТЬ КЛИЕНТУ" (если есть username)
+        keyboard = None
         
         # Если есть username, добавляем кнопку "Написать клиенту"
         username = p.get('username', '')
         if username and username.startswith('@'):
+            keyboard = InlineKeyboardMarkup()
             keyboard.add(InlineKeyboardButton(
                 "💬 Написать клиенту", 
                 url=f"https://t.me/{username[1:]}"
             ))
-        
-        # ОДНА КНОПКА "ОТВЕТИТЬ" для всех типов заявок
-        keyboard.add(InlineKeyboardButton("✅ Ответить", callback_data=f"reply_{request_id}"))
 
-        # ОТПРАВЛЯЕМ СООБЩЕНИЕ С КНОПКОЙ
+        # ОТПРАВЛЯЕМ СООБЩЕНИЕ БЕЗ КНОПКИ "ОТВЕТИТЬ"
         admin_bot.send_message(
             ADMIN_TARGET_CHAT_ID, 
             text, 
             parse_mode="Markdown",
             reply_markup=keyboard
         )
-        log.info("ADMIN DELIVERED (HTTP reserve) with reply button - ID: %s", request_id)
+        log.info("ADMIN DELIVERED (HTTP reserve) without reply button - ID: %s", request_id)
         return {"ok": True, "message": "Заявка отправлена"}
     except Exception as e:
         log.error("ADMIN reserve send failed: %r", e)
@@ -245,13 +243,13 @@ def webhook():
                 f"╚══════════════════════"
             )
             
-            keyboard = InlineKeyboardMarkup()
+            keyboard = None
             if username and username.startswith('@'):
+                keyboard = InlineKeyboardMarkup()
                 keyboard.add(InlineKeyboardButton(
                     "💬 Написать клиенту", 
                     url=f"https://t.me/{username[1:]}"
                 ))
-            keyboard.add(InlineKeyboardButton("✅ Ответить", callback_data=f"reply_{request_id}"))
             
             admin_bot.send_message(
                 ADMIN_TARGET_CHAT_ID,
@@ -295,16 +293,13 @@ def webhook():
                 f"╚══════════════════════"
             )
 
-            keyboard = InlineKeyboardMarkup()
-            
+            keyboard = None
             if uname and uname.startswith('@'):
+                keyboard = InlineKeyboardMarkup()
                 keyboard.add(InlineKeyboardButton(
                     "💬 Написать клиенту", 
                     url=f"https://t.me/{uname[1:]}"
                 ))
-            
-            # ТОЛЬКО КНОПКА "ОТВЕТИТЬ" вместо кнопок статусов
-            keyboard.add(InlineKeyboardButton("✅ Ответить", callback_data=f"reply_{request_id}"))
 
             admin_bot.send_message(
                 ADMIN_TARGET_CHAT_ID,
@@ -339,36 +334,6 @@ def webhook():
     # прочее — просто лог
     log.info("MSG: chat_id=%s text=%r", chat_id, text)
     return jsonify(ok=True)
-
-# ---------- Обработка callback query для админ-бота ----------
-@admin_bot.callback_query_handler(func=lambda call: True)
-def handle_admin_callback(call):
-    """Обработка callback в админ-боте."""
-    try:
-        data = call.data
-        message = call.message
-        admin_bot.answer_callback_query(call.id)
-        
-        log.info("Admin callback received: %s", data)
-        
-        if data.startswith("reply_"):
-            request_id = data.replace("reply_", "")
-            admin_bot.answer_callback_query(
-                call.id,
-                text=f"Ответьте на заявку #{request_id}",
-                show_alert=True
-            )
-            
-    except Exception as e:
-        log.exception("Admin callback failed: %r", e)
-        try:
-            admin_bot.answer_callback_query(
-                call.id,
-                text="Ошибка обработки",
-                show_alert=True
-            )
-        except:
-            pass
 
 # ---------- commands ----------
 @bot.message_handler(commands=["start"])
