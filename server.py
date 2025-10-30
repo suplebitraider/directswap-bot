@@ -194,12 +194,8 @@ def webhook():
     upd = request.get_json(silent=True) or {}
     log.info("WEBHOOK JSON[0:300]=%r", str(upd)[:300])
 
-    # Обработка callback query для админ-бота
-    callback_query = upd.get("callback_query")
-    if callback_query:
-        # Передаем callback в админ-бота для обработки
-        admin_bot.process_new_updates([telebot.types.Update.de_json(upd)])
-        return jsonify(ok=True)
+    # УБРАЛ ОБРАБОТКУ CALLBACK QUERY ДЛЯ АДМИН-БОТА
+    # Теперь callback queries игнорируются
 
     msg = upd.get("message") or upd.get("edited_message")
     if not msg:
