@@ -1,34 +1,56 @@
 import os
-import json
-from flask import Flask, request
+import logging
+from flask import Flask, request, jsonify
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
-BOT_TOKEN = '7551518552:AAGvaJ87gP84CtgOQyDpjUzjcy_STYvRsGw'
-WEBAPP_URL = 'https://suplabiltraidor.github.io/directswap-mob/index.html'
+# Настройка логирования
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
+bot = telebot.TeleBot('7551518552:AAGvaJ87gP84CtgOQyDpjUzjcy_STYvRsGw')
 
 @bot.message_handler(commands=['start'])
-def start_cmd(message):
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton("✔ открыть обменник", web_app=WebAppInfo(url=WEBAPP_URL)))
-    bot.send_message(message.chat.id, "Добро пожаловать!\nНажмите кнопку ниже:", reply_markup=keyboard)
-
-@bot.message_handler(content_types=['web_app_data'])
-def webapp_data(message):
+def start(message):
     try:
-        data = json.loads(message.web_app_data.data)
-        bot.send_message(message.chat.id, "✅ Заявка принята!")
-    except:
-        bot.send_message(message.chat.id, "❌ Ошибка данных")
+        logger.info(f"START command from {message.chat.id}")
+        
+        keyboard = InlineKeyboardMarkup()
+        button = InlineKeyboardButton(
+            "✔ открыть обменник", 
+            web_app=WebAppInfo(url="https://suplabiltraidor.github.io/directswap-mob/index.html")
+        )
+        keyboard.add(button)
+        
+        logger.info("Keyboard created")
+        bot.send_message(message.chat.id, "Тестовое сообщение!", reply_markup=keyboard)
+        logger.info("Message sent successfully")
+        
+    except Exception as e:
+        logger.error(f"Error in start: {e}")
 
 @app.route('/webhook/ds12345', methods=['POST'])
 def webhook():
-    update = telebot.types.Update.de_json(request.get_json())
-    bot.process_new_updates([update])
-    return ''
+    try:
+        logger.info("Webhook called")
+        json_data = request.get_json()
+        logger.info(f"Received update: {json_data}")
+        
+        update = telebot.types.Update.de_json(json_data)
+        bot.process_new_updates([update])
+        
+        logger.info("Update processed")
+        return jsonify({"status": "ok"})
+        
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({"status": "ok"})
 
 if __name__ == '__main__':
+    logger.info("Starting server...")
     app.run(host='0.0.0.0', port=10000)
