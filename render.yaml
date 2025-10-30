@@ -1,24 +1,12 @@
 services:
   - type: web
-    name: directswap-bot
+    name: telegram-bot
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn server:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
+    startCommand: gunicorn server:app
     envVars:
-      - key: PORT
-        value: 10000
-      - key: WEBHOOK_BASE
-        sync: false
-      - key: WEBHOOK_SECRET
-        generateValue: true
       - key: BOT_TOKEN
-        sync: false
-      - key: ADMIN_BOT_TOKEN
-        sync: false
-      - key: ADMIN_ID
-        sync: false
-      - key: ADMIN_TARGET_CHAT_ID
-        sync: false
-      - key: WEBAPP_URL
-        sync: false
+        value: 7551518552:AAGvaJ87gP84CtgOQyDpjUzjcy_STYvRsGw
+      - key: WEBHOOK_URL
+        value: https://directswap-bot.onrender.com
