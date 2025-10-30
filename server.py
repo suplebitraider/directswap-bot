@@ -81,7 +81,6 @@ def webapp_data(message):
         user_sessions[request_id] = message.chat.id
         log.info(f"User session saved: {request_id} -> {message.chat.id}")
 
-        # Обработка данных от webapp
         # TODO: Добавьте вашу логику обработки обмена
 
         bot.send_message(message.chat.id, "✅ Заявка принята в обработку!")
